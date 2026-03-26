@@ -19,7 +19,7 @@ a hard Turbo Boost disable.
 
 ## Installation
 
-1. Install `thermald` for your distribution (many distributions ship it by default).
+1. Ensure `thermald` is installed (many distributions include it by default; if not, install it via your package manager).
 2. Copy both XML files into `/etc/thermald/`:
    ```
    sudo cp thermal-conf.xml /etc/thermald/

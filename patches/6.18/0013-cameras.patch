@@ -1023,13 +1023,16 @@ Date: Fri, 13 Mar 2026 08:52:07 +0000
 Subject: [PATCH] media: ipu-bridge: Add front camera rotation quirks for
  Surface Pro 8 and 9
 
-On the Surface Pro 8 and 9, camera rotation in `ssdb.degree` is `0` (no rotation) but should be `180`. Fix this with a quirk.
+On the Surface Pro 8 and 9, camera rotation in ssdb.degree is 0 (no
+rotation) but should be 180. Fix this with a sensor-specific quirk that
+only overrides the rotation for the affected front camera sensor on each
+device, leaving other sensors (e.g. rear cameras) to use the SSDB value.
 
 Link: https://github.com/linux-surface/kernel/pull/160
 Patchset: cameras
 ---
- drivers/media/pci/intel/ipu-bridge.c | 29 ++++++++++++++++++++++++++++
- 1 file changed, 29 insertions(+)
+ drivers/media/pci/intel/ipu-bridge.c | 31 ++++++++++++++++++++++++++++
+ 1 file changed, 31 insertions(+)
 
 diff --git a/drivers/media/pci/intel/ipu-bridge.c b/drivers/media/pci/intel/ipu-bridge.c
 index ac637207b..1ef31d655 100644
@@ -1043,33 +1046,36 @@ index ac637207b..1ef31d655 100644
  
  #include <media/ipu-bridge.h>
  #include <media/v4l2-fwnode.h>
-@@ -98,6 +99,30 @@ static const struct ipu_sensor_config ipu_supported_sensors[] = {
+@@ -98,6 +99,32 @@ static const struct ipu_sensor_config ipu_supported_sensors[] = {
  	IPU_SENSOR_CONFIG("XMCC0003", 1, 321468000),
  };
  
-+static const struct dmi_system_id override_rotation[] = {
-+	/*
-+	 * Systems on which rotation value need's to be overridden but ssdb->degree value is 0 (normal)
-+	 */
-+	{
-+		.ident = "Microsoft Surface Pro 9",
-+		.matches = {
-+			DMI_MATCH(DMI_SYS_VENDOR, "Microsoft Corporation"),
-+			DMI_MATCH(DMI_PRODUCT_NAME, "Surface Pro 9"),
-+		},
-+		.driver_data = (void *)180,
-+	},
++/*
++ * Mapping of (platform DMI, front-camera ACPI sensor ID) pairs whose
++ * ssdb.degree value reports 0 (normal) but should be 180.
++ * driver_data holds the ACPI device HID of the affected front camera
++ * sensor so that the fix is only applied to that specific sensor and
++ * does not inadvertently rotate rear cameras or other sensors.
++ */
++static const struct dmi_system_id front_camera_rotation_dmi_ids[] = {
 +	{
 +		.ident = "Microsoft Surface Pro 8",
 +		.matches = {
 +			DMI_MATCH(DMI_SYS_VENDOR, "Microsoft Corporation"),
 +			DMI_MATCH(DMI_PRODUCT_NAME, "Surface Pro 8"),
 +		},
-+		.driver_data = (void *)180,
++		.driver_data = "INT33BE",
++	},
++	{
++		.ident = "Microsoft Surface Pro 9",
++		.matches = {
++			DMI_MATCH(DMI_SYS_VENDOR, "Microsoft Corporation"),
++			DMI_MATCH(DMI_PRODUCT_NAME, "Surface Pro 9"),
++		},
++		.driver_data = "OVTI5693",
 +	},
 +	{}
 +};
-+
 +
  static const struct ipu_property_names prop_names = {
  	.clock_frequency = "clock-frequency",
@@ -1078,10 +1084,10 @@ index ac637207b..1ef31d655 100644
  static u32 ipu_bridge_parse_rotation(struct acpi_device *adev,
  				     struct ipu_sensor_ssdb *ssdb)
  {
-+ 	const struct dmi_system_id *dmi_rotation;
-+	dmi_rotation = dmi_first_match(override_rotation);
-+	if (dmi_rotation && dmi_rotation->driver_data)
-+		return (u32)(uintptr_t)dmi_rotation->driver_data;
++	const struct dmi_system_id *dmi_id;
++	dmi_id = dmi_first_match(front_camera_rotation_dmi_ids);
++	if (dmi_id && !strcmp(acpi_device_hid(adev), (const char *)dmi_id->driver_data))
++		return 180;
  	switch (ssdb->degree) {
  	case IPU_SENSOR_ROTATION_NORMAL:
  		return 0;
