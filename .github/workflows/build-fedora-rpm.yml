@@ -58,8 +58,6 @@ jobs:
     steps:
       - name: Free up disk space
         run: |
-          echo "=== Disk before cleanup ==="
-          df -h / /mnt
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /usr/local/share/boost /usr/share/swift /opt/hostedtoolcache \
             /usr/local/graalvm /usr/local/.ghcup /usr/local/share/powershell \
@@ -70,29 +68,15 @@ jobs:
             /usr/lib/jvm 2>/dev/null || true
           sudo docker image prune -af 2>/dev/null || true
           sudo apt-get clean 2>/dev/null || true
-          # Use /mnt for large build artifacts (separate ~60GB disk)
-          sudo mkdir -p /mnt/build
-          sudo chown "$(id -u):$(id -g)" /mnt/build
-          echo "=== Disk after cleanup ==="
-          df -h / /mnt
+          df -h /
 
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Initialize Fedora container
+      - name: Initialize containers
         run: |
-          # Create container with both workspace and /mnt mounted for extra disk
-          if command -v docker &> /dev/null; then
-            DOCKER="docker"
-          elif command -v podman &> /dev/null; then
-            DOCKER="podman"
-          fi
-          ${DOCKER} run -d --name "${GITHUB_REPOSITORY_ID}" \
-            -v "${GITHUB_WORKSPACE}:/working" \
-            -v "/mnt/build:/mnt/build" \
-            --workdir "/working" \
-            --entrypoint "tail" \
-            "registry.fedoraproject.org/fedora:${FEDORA}" -f /dev/null
+          bash ./.github/scripts/container/create.sh \
+            registry.fedoraproject.org/fedora:${FEDORA}
 
       - name: Install build dependencies
         run: |
@@ -109,27 +93,17 @@ jobs:
             -- \
             bash ./.github/scripts/package/fedora.sh setup-secureboot
 
-      - name: Build RPM packages
+      - name: Build packages
         run: |
           bash ./.github/scripts/container/exec.sh \
             -- \
-            bash -c '
-              set -euxo pipefail
-              cd pkg/fedora/kernel-surface
-              git config --global user.name "surfacebot"
-              git config --global user.email "surfacebot@users.noreply.github.com"
-              python3 build-linux-surface.py --mode srpm --ark-dir /mnt/build/kernel-ark --outdir srpm
-              rm -rf /mnt/build/kernel-ark
-              ls -la srpm/
-              find srpm -name "*.src.rpm" -type f -print0 | xargs -0 -I {} \
-                rpmbuild -rb --define "_topdir /mnt/build/rpmbuild" --define "_rpmdir ${PWD}/out" {}
-            '
+            bash ./.github/scripts/package/fedora.sh build-packages
 
       - name: Check disk space
         if: always()
         run: df -h /
 
-      - name: Sign RPM packages
+      - name: Sign packages
         env:
           GPG_KEY: ${{ secrets.LINUX_SURFACE_GPG_KEY }}
         run: |
@@ -139,18 +113,7 @@ jobs:
             -- \
             bash ./.github/scripts/package/fedora.sh sign-packages
 
-      - name: List built packages
-        id: packages
-        run: |
-          echo "=== Built RPMs ==="
-          ls -lh pkg/fedora/kernel-surface/out/x86_64/ 2>/dev/null || echo "No x86_64 RPMs found"
-          RPM_COUNT=$(find pkg/fedora/kernel-surface/out -name '*.rpm' -type f 2>/dev/null | wc -l)
-          if [[ "$RPM_COUNT" -eq 0 ]]; then
-            echo "::error::No RPM packages were built"
-            exit 1
-          fi
-
-      - name: Upload RPM artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
           name: kernel-surface-fedora-${{ env.FEDORA }}-rpms
