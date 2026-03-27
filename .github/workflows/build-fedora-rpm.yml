@@ -132,11 +132,23 @@ jobs:
             -- \
             bash ./.github/scripts/package/fedora.sh sign-packages
 
+      - name: Collect built RPMs
+        run: |
+          mkdir -p built-rpms
+          # Check all possible RPM output locations
+          echo "=== Checking RPM locations ==="
+          find pkg/fedora/kernel-surface/out -name '*.rpm' -type f 2>/dev/null | head -20 || echo "None in out/"
+          find /mnt/rpmbuild -name '*.rpm' -type f 2>/dev/null | head -20 || echo "None in /mnt/rpmbuild/"
+          # Copy RPMs from wherever they ended up
+          find pkg/fedora/kernel-surface/out /mnt/rpmbuild -name '*.rpm' -type f -exec cp {} built-rpms/ \; 2>/dev/null || true
+          echo "=== Collected RPMs ==="
+          ls -lh built-rpms/ || echo "No RPMs found anywhere"
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
           name: kernel-surface-fedora-${{ env.FEDORA }}-rpms
-          path: pkg/fedora/kernel-surface/out/x86_64
+          path: built-rpms/
           retention-days: 30
 
   release:
