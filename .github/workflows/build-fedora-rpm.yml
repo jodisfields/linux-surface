@@ -32,9 +32,10 @@ on:
       fedora_version:
         description: 'Fedora version to build for'
         required: false
-        default: '42'
+        default: '41'
         type: choice
         options:
+          - '40'
           - '41'
           - '42'
 
@@ -47,11 +48,11 @@ concurrency:
 
 env:
   GPG_KEY_ID: 56C464BAAC421453
-  FEDORA: ${{ github.event.inputs.fedora_version || '42' }}
+  FEDORA: ${{ github.event.inputs.fedora_version || '41' }}
 
 jobs:
   build:
-    name: Build RPM (Fedora ${{ github.event.inputs.fedora_version || '42' }})
+    name: Build RPM (Fedora ${{ github.event.inputs.fedora_version || '41' }})
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
