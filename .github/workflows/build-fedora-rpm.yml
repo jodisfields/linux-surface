@@ -112,7 +112,11 @@ jobs:
               python3 build-linux-surface.py --mode srpm --ark-dir /mnt/kernel-ark --outdir srpm &&
               rm -rf /mnt/kernel-ark &&
               df -h / /mnt &&
-              find srpm -name "*.src.rpm" -type f -print0 | xargs -0 -I {} rpmbuild -rb --define "_topdir /mnt/rpmbuild" --define "_rpmdir $PWD/out" {}'
+              find srpm -name "*.src.rpm" -type f -print0 | xargs -0 -I {} rpmbuild -rb --define "_topdir /mnt/rpmbuild" --define "_rpmdir $PWD/out" {}' 2>&1 | tail -200
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker logs "${GITHUB_REPOSITORY_ID}" 2>&1 | tail -500 || true
 
       - name: Check disk space
         if: always()
