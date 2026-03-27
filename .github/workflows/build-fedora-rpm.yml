@@ -77,8 +77,14 @@ jobs:
 
       - name: Initialize containers
         run: |
-          bash ./.github/scripts/container/create.sh \
-            registry.fedoraproject.org/fedora:${{ env.FEDORA }}
+          # Mount /mnt into container for extra build space (~60GB)
+          if command -v docker &> /dev/null; then DOCKER=docker; else DOCKER=podman; fi
+          $DOCKER run -d --name "${GITHUB_REPOSITORY_ID}" \
+            -v "${GITHUB_WORKSPACE}:/working" \
+            -v "/mnt:/mnt" \
+            --workdir "/working" \
+            --entrypoint tail \
+            "registry.fedoraproject.org/fedora:${{ env.FEDORA }}" -f /dev/null
 
       - name: Install build dependencies
         run: |
@@ -99,7 +105,14 @@ jobs:
         run: |
           bash ./.github/scripts/container/exec.sh \
             -- \
-            bash ./.github/scripts/package/fedora.sh build-packages
+            bash -c 'set -euxo pipefail &&
+              cd pkg/fedora/kernel-surface &&
+              git config --global user.name surfacebot &&
+              git config --global user.email surfacebot@users.noreply.github.com &&
+              python3 build-linux-surface.py --mode srpm --ark-dir /mnt/kernel-ark --outdir srpm &&
+              rm -rf /mnt/kernel-ark &&
+              df -h / /mnt &&
+              find srpm -name "*.src.rpm" -type f -print0 | xargs -0 -I {} rpmbuild -rb --define "_topdir /mnt/rpmbuild" --define "_rpmdir $PWD/out" {}'
 
       - name: Check disk space
         if: always()
