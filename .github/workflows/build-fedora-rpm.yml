@@ -110,11 +110,12 @@ jobs:
       - name: Setup build directories on /mnt
         run: |
           # Use /mnt (~60GB) for large build artifacts to avoid filling root
-          sudo mkdir -p /mnt/kernel-ark /mnt/rpmbuild
-          sudo chown -R 0:0 /mnt/kernel-ark /mnt/rpmbuild
+          # Don't create /mnt/kernel-ark — let git clone create it via the symlink
+          sudo mkdir -p /mnt/rpmbuild
+          sudo chown -R 0:0 /mnt/rpmbuild
           bash ./.github/scripts/container/exec.sh \
             -- \
-            bash -c 'ln -sfn /mnt/kernel-ark pkg/fedora/kernel-surface/kernel-ark'
+            bash -c 'ln -sfn /mnt/kernel-ark pkg/fedora/kernel-surface/kernel-ark && ln -sfn /mnt/rpmbuild pkg/fedora/kernel-surface/rpmbuild'
 
       - name: Build packages
         run: |
