@@ -222,13 +222,16 @@ jobs:
             # Install the kernel
             sudo dnf install ./kernel-surface-[0-9]*.rpm ./kernel-surface-core-*.rpm ./kernel-surface-modules-*.rpm
 
+            # (Optional) Clone the repo for contrib config files
+            git clone --depth 1 ${{ github.server_url }}/${{ github.repository }}.git /tmp/linux-surface
+
             # (Surface Laptop Studio 1) Apply thermal config
-            sudo cp contrib/thermald/surface_laptop_studio_1/thermal-conf.xml /etc/thermald/
-            sudo cp contrib/thermald/surface_laptop_studio_1/thermal-cpu-cdev-order.xml /etc/thermald/
+            sudo cp /tmp/linux-surface/contrib/thermald/surface_laptop_studio_1/thermal-conf.xml /etc/thermald/
+            sudo cp /tmp/linux-surface/contrib/thermald/surface_laptop_studio_1/thermal-cpu-cdev-order.xml /etc/thermald/
             sudo systemctl restart thermald
 
             # (Optional) Apply runtime performance tuning
-            sudo cp contrib/performance-tuning/99-surface-performance.conf /etc/sysctl.d/
+            sudo cp /tmp/linux-surface/contrib/performance-tuning/99-surface-performance.conf /etc/sysctl.d/
             sudo sysctl --system
 
             # Reboot
