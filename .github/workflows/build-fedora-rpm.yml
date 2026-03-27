@@ -56,16 +56,37 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: Maximize disk space
-        uses: easimon/maximize-build-space@v10
-        with:
-          root-reserve-mb: 30720
-          temp-reserve-mb: 1024
-          remove-dotnet: true
-          remove-android: true
-          remove-haskell: true
-          remove-codeql: true
-          remove-docker-images: true
+      - name: Free up disk space
+        run: |
+          echo "=== Before cleanup ==="
+          df -h /
+          # Remove large pre-installed toolchains (~30GB total)
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo rm -rf /usr/share/swift || true
+          sudo rm -rf /opt/hostedtoolcache || true
+          sudo rm -rf /usr/local/graalvm || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /usr/local/share/powershell || true
+          sudo rm -rf /usr/local/share/chromium || true
+          sudo rm -rf /usr/local/julia* || true
+          sudo rm -rf /opt/pipx || true
+          sudo rm -rf /usr/share/az_* || true
+          sudo rm -rf /opt/microsoft || true
+          sudo rm -rf /usr/share/miniconda || true
+          sudo rm -rf /usr/local/aws-* || true
+          sudo rm -rf /usr/local/share/vcpkg || true
+          sudo rm -rf /usr/share/kotlinc || true
+          sudo rm -rf /usr/share/gradle* || true
+          sudo rm -rf /usr/share/sbt || true
+          sudo rm -rf /usr/lib/google-cloud-sdk || true
+          sudo rm -rf /usr/lib/jvm || true
+          sudo docker image prune -af || true
+          sudo apt-get clean || true
+          echo "=== After cleanup ==="
+          df -h /
 
       - name: Checkout code
         uses: actions/checkout@v6
