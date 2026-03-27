@@ -16,7 +16,6 @@ on:
     tags:
       - 'fedora-*'
       - 'release-*'
-      - 'kernel-surface-*'
 
   pull_request:
     branches:
@@ -120,7 +119,10 @@ jobs:
           echo "=== Built RPMs ==="
           ls -lh pkg/fedora/kernel-surface/out/x86_64/ 2>/dev/null || echo "No x86_64 RPMs found"
           RPM_COUNT=$(find pkg/fedora/kernel-surface/out -name '*.rpm' -type f 2>/dev/null | wc -l)
-          echo "rpm_count=$RPM_COUNT" >> $GITHUB_OUTPUT
+          if [[ "$RPM_COUNT" -eq 0 ]]; then
+            echo "::error::No RPM packages were built"
+            exit 1
+          fi
 
       - name: Upload RPM artifacts
         uses: actions/upload-artifact@v6
@@ -194,18 +196,13 @@ jobs:
 
             ### Included patches & features
             - All upstream **linux-surface** hardware patches (Surface SAM, IPTS/ITHC touchscreen, cameras, secureboot, GPE, type-cover, etc.)
-            - **BORE** CPU scheduler (Burst-Oriented Response Enhancer) for improved desktop responsiveness
-            - **BBR v3** TCP congestion control for better network throughput
-            - 1000 Hz timer, full preempt, full tickless, Transparent HugePages (always)
-            - MGLRU, ZSWAP with zstd, DAMON reclaim, sched-ext support
-            - NTSYNC for Wine/Proton, WireGuard built-in, hardware crypto acceleration
-            - Surface Laptop Studio 1 optimizations (dGPU hotplug, Thunderbolt 4, thermal management)
+            - Surface Laptop Studio 1 thermal management config included
 
             ### Installation
 
             ```bash
             # Install the kernel
-            sudo dnf install ./kernel-surface-*.rpm
+            sudo dnf install ./kernel-surface-[0-9]*.rpm ./kernel-surface-core-*.rpm ./kernel-surface-modules-*.rpm
 
             # (Surface Laptop Studio 1) Apply thermal config
             sudo cp contrib/thermald/surface_laptop_studio_1/thermal-conf.xml /etc/thermald/
