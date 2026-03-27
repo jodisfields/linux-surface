@@ -114,11 +114,13 @@ jobs:
           bash ./.github/scripts/container/exec.sh \
             -- \
             bash -c '
+              set -euxo pipefail
               cd pkg/fedora/kernel-surface
               git config --global user.name "surfacebot"
               git config --global user.email "surfacebot@users.noreply.github.com"
               python3 build-linux-surface.py --mode srpm --ark-dir /mnt/build/kernel-ark --outdir srpm
               rm -rf /mnt/build/kernel-ark
+              ls -la srpm/
               find srpm -name "*.src.rpm" -type f -print0 | xargs -0 -I {} \
                 rpmbuild -rb --define "_topdir /mnt/build/rpmbuild" --define "_rpmdir ${PWD}/out" {}
             '
