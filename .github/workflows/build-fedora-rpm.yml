@@ -107,22 +107,21 @@ jobs:
             -- \
             bash ./.github/scripts/package/fedora.sh setup-secureboot
 
-      - name: Setup build directories on /mnt
-        run: |
-          # Use /mnt (~60GB) for large build artifacts to avoid filling root
-          # Don't create /mnt/kernel-ark — let git clone create it via the symlink
-          sudo mkdir -p /mnt/rpmbuild
-          sudo chown -R 0:0 /mnt/rpmbuild
-          bash ./.github/scripts/container/exec.sh \
-            -- \
-            bash -c 'ln -sfn /mnt/kernel-ark pkg/fedora/kernel-surface/kernel-ark && ln -sfn /mnt/rpmbuild pkg/fedora/kernel-surface/rpmbuild'
-
       - name: Build packages
         run: |
           bash ./.github/scripts/container/exec.sh \
-            -e MAKEFLAGS="-j$(nproc)" \
             -- \
-            bash ./.github/scripts/package/fedora.sh build-packages
+            bash -c '
+              set -euxo pipefail
+              cd pkg/fedora/kernel-surface
+              git config --global user.name surfacebot
+              git config --global user.email surfacebot@users.noreply.github.com
+              python3 build-linux-surface.py --mode srpm --ark-dir /mnt/kernel-ark --outdir srpm
+              rm -rf /mnt/kernel-ark
+              df -h / /mnt
+              find srpm -name "*.src.rpm" -type f -print0 | xargs -0 -I {} \
+                rpmbuild -rb --define "_topdir /mnt/rpmbuild" --define "_rpmdir ${PWD}/out" {}
+            '
 
       - name: Check disk space
         if: always()
