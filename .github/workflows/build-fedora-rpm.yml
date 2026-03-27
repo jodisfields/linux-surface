@@ -156,6 +156,11 @@ jobs:
           KERNEL_VER=$(grep 'PACKAGE_TAG' pkg/fedora/kernel-surface/build-linux-surface.py \
             | grep -oP '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 
+          if [[ -z "$KERNEL_VER" ]]; then
+            echo "::error::Failed to extract kernel version from PACKAGE_TAG"
+            exit 1
+          fi
+
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             TAG="${{ github.ref_name }}"
           else
