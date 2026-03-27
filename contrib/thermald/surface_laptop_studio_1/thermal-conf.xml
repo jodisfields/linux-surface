@@ -1,84 +1,105 @@
-<?xml version="1.0"?>
+<?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Thermald configuration for the Microsoft Surface Laptop Studio 1.
+  Thermal configuration for Surface Laptop Studio 1
+  Intel Core i5-11300H / i7-11370H with optional NVIDIA RTX 3050 Ti
 
-  CPU: Intel Core i5-11300H / i7-11370H (Tiger Lake H35, 28 W base TDP).
+  This configuration manages thermals for both the CPU and dGPU,
+  targeting a balance between performance and quiet fan operation.
 
-  Trip points:
-    65 °C  – passive: reduce CPU power via RAPL / intel_pstate.
-    85 °C  – max:     disable Turbo Boost entirely as a last resort.
-
-  Adjust <Temperature> to taste.  Units are milli-degrees Celsius.
-
-  ProductName is intentionally set to * following the established pattern
-  in this repository (see surface_pro_7, surface_laptop_1, etc.).  This
-  means the file is treated as a template that the user can tailor; thermald
-  picks it up regardless of the DMI product name.  If you run multiple
-  Surface models you can narrow the match by replacing * with the exact
-  DMI product name reported by "sudo dmidecode -s system-product-name"
-  (typically "Surface Laptop Studio" for SLS1).
+  Temperature thresholds are tuned for the SLS1 chassis which has
+  limited thermal headroom in tablet/studio mode.
 -->
 <ThermalConfiguration>
-<Platform>
-	<Name>Surface Laptop Studio 1 Thermal Configuration</Name>
-	<!-- Use * to follow repo template convention; change to "Surface Laptop Studio"
-	     if you need to be device-specific. -->
-	<ProductName>*</ProductName>
-	<Preference>QUIET</Preference>
-	<ThermalZones>
-		<ThermalZone>
-			<Type>cpu</Type>
-			<TripPoints>
-				<!-- Passive: throttle CPU power via RAPL + intel_pstate -->
-				<TripPoint>
-					<SensorType>x86_pkg_temp</SensorType>
-					<Temperature>65000</Temperature>
-					<type>passive</type>
-					<ControlType>SEQUENTIAL</ControlType>
-					<CoolingDevice>
-						<index>1</index>
-						<type>rapl_controller</type>
-						<influence>100</influence>
-						<SamplingPeriod>10</SamplingPeriod>
-					</CoolingDevice>
-					<CoolingDevice>
-						<index>2</index>
-						<type>intel_pstate</type>
-						<influence>90</influence>
-						<SamplingPeriod>10</SamplingPeriod>
-					</CoolingDevice>
-				</TripPoint>
-				<!-- Max: disable Turbo Boost as a last resort -->
-				<TripPoint>
-					<SensorType>x86_pkg_temp</SensorType>
-					<Temperature>85000</Temperature>
-					<type>max</type>
-					<ControlType>SEQUENTIAL</ControlType>
-					<CoolingDevice>
-						<index>1</index>
-						<type>turbo</type>
-						<influence>100</influence>
-						<SamplingPeriod>30</SamplingPeriod>
-						<!--
-						  intel_pstate/no_turbo semantics:
-						    0 = turbo allowed (normal operation)
-						    1 = turbo disabled (thermal throttle)
-						  TargetState=1 writes 1 to no_turbo → disables Turbo Boost.
-						-->
-						<TargetState>1</TargetState>
-					</CoolingDevice>
-				</TripPoint>
-			</TripPoints>
-		</ThermalZone>
-	</ThermalZones>
-	<CoolingDevices>
-		<CoolingDevice>
-			<Type>turbo</Type>
-			<Path>/sys/devices/system/cpu/intel_pstate/no_turbo</Path>
-			<MinState>0</MinState>
-			<MaxState>1</MaxState>
-			<DebouncePeriod>60000</DebouncePeriod>
-		</CoolingDevice>
-	</CoolingDevices>
-</Platform>
+  <Platform>
+    <Name>Override</Name>
+    <ProductName>Surface Laptop Studio*</ProductName>
+    <Preference>PERFORMANCE</Preference>
+    <ThermalZones>
+      <!-- CPU thermal zone -->
+      <ThermalZone>
+        <Type>cpu</Type>
+        <TripPoints>
+          <!-- Initial throttling at 75C -->
+          <TripPoint>
+            <SensorType>x86_pkg_temp</SensorType>
+            <Temperature>75000</Temperature>
+            <type>passive</type>
+            <CoolingDevice>
+              <index>1</index>
+              <type>Processor</type>
+              <influence>100</influence>
+              <SamplingPeriod>4</SamplingPeriod>
+              <TargetState>2</TargetState>
+            </CoolingDevice>
+          </TripPoint>
+          <!-- Aggressive throttling at 85C -->
+          <TripPoint>
+            <SensorType>x86_pkg_temp</SensorType>
+            <Temperature>85000</Temperature>
+            <type>passive</type>
+            <CoolingDevice>
+              <index>1</index>
+              <type>Processor</type>
+              <influence>100</influence>
+              <SamplingPeriod>3</SamplingPeriod>
+              <TargetState>5</TargetState>
+            </CoolingDevice>
+          </TripPoint>
+          <!-- Maximum throttling at 95C -->
+          <TripPoint>
+            <SensorType>x86_pkg_temp</SensorType>
+            <Temperature>95000</Temperature>
+            <type>max</type>
+            <CoolingDevice>
+              <index>1</index>
+              <type>Processor</type>
+              <influence>100</influence>
+              <SamplingPeriod>2</SamplingPeriod>
+              <TargetState>10</TargetState>
+            </CoolingDevice>
+          </TripPoint>
+        </TripPoints>
+      </ThermalZone>
+      <!-- Skin temperature zone (palm rest / chassis) -->
+      <ThermalZone>
+        <Type>skin</Type>
+        <TripPoints>
+          <TripPoint>
+            <SensorType>GEN1</SensorType>
+            <Temperature>45000</Temperature>
+            <type>passive</type>
+            <CoolingDevice>
+              <index>1</index>
+              <type>Processor</type>
+              <influence>80</influence>
+              <SamplingPeriod>5</SamplingPeriod>
+              <TargetState>3</TargetState>
+            </CoolingDevice>
+          </TripPoint>
+          <TripPoint>
+            <SensorType>GEN1</SensorType>
+            <Temperature>50000</Temperature>
+            <type>max</type>
+            <CoolingDevice>
+              <index>1</index>
+              <type>Processor</type>
+              <influence>100</influence>
+              <SamplingPeriod>3</SamplingPeriod>
+              <TargetState>6</TargetState>
+            </CoolingDevice>
+          </TripPoint>
+        </TripPoints>
+      </ThermalZone>
+    </ThermalZones>
+    <CoolingDevices>
+      <CoolingDevice>
+        <Type>Processor</Type>
+        <MinState>0</MinState>
+        <IncDecStep>1</IncDecStep>
+        <ReadBack>0</ReadBack>
+        <MaxState>10</MaxState>
+        <DebouncePeriod>3</DebouncePeriod>
+      </CoolingDevice>
+    </CoolingDevices>
+  </Platform>
 </ThermalConfiguration>
