@@ -116,16 +116,24 @@ jobs:
               cd pkg/fedora/kernel-surface
               git config --global user.name surfacebot
               git config --global user.email surfacebot@users.noreply.github.com
-              python3 build-linux-surface.py --mode srpm --ark-dir /mnt/kernel-ark --outdir srpm
+              python3 build-linux-surface.py --mode srpm --ark-dir /mnt/kernel-ark --outdir srpm 2>&1 | tee /mnt/build.log
               rm -rf /mnt/kernel-ark
               df -h / /mnt
               find srpm -name "*.src.rpm" -type f -print0 | xargs -0 -I {} \
-                rpmbuild -rb --define "_topdir /mnt/rpmbuild" --define "_rpmdir ${PWD}/out" {}
+                rpmbuild -rb --define "_topdir /mnt/rpmbuild" --define "_rpmdir ${PWD}/out" {} 2>&1 | tee -a /mnt/build.log
             '
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-log
+          path: /mnt/build.log
+          retention-days: 7
 
       - name: Check disk space
         if: always()
-        run: df -h /
+        run: df -h / /mnt
 
       - name: Sign packages
         env:
