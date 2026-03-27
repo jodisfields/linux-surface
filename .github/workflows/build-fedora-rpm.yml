@@ -119,7 +119,16 @@ jobs:
               echo "Building from: $SRPM" &&
               rpmbuild -rb --define "_topdir /mnt/rpmbuild" --define "_rpmdir /mnt/rpms" "$SRPM" &&
               echo "=== Built RPMs ===" &&
-              find /mnt/rpms /mnt/rpmbuild -name "*.rpm" -type f 2>/dev/null'
+              find /mnt/rpms /mnt/rpmbuild -name "*.rpm" -type f 2>/dev/null' \
+          2>&1 | tee /tmp/build-output.log; exit ${PIPESTATUS[0]}
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-output-log
+          path: /tmp/build-output.log
+          retention-days: 7
 
       - name: Dump container logs on failure
         if: failure()
