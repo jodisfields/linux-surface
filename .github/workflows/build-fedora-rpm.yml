@@ -112,7 +112,14 @@ jobs:
               python3 build-linux-surface.py --mode srpm --ark-dir /mnt/kernel-ark --outdir srpm &&
               rm -rf /mnt/kernel-ark &&
               df -h / /mnt &&
-              find srpm -name "*.src.rpm" -type f -print0 | xargs -0 -I {} rpmbuild -rb --define "_topdir /mnt/rpmbuild" --define "_rpmdir $PWD/out" {}' 2>&1 | tail -200
+              echo "=== SRPM files ===" &&
+              ls -la srpm/ &&
+              SRPM=$(find srpm -name "*.src.rpm" -type f | head -1) &&
+              test -n "$SRPM" &&
+              echo "Building from: $SRPM" &&
+              rpmbuild -rb --define "_topdir /mnt/rpmbuild" --define "_rpmdir /mnt/rpms" "$SRPM" &&
+              echo "=== Built RPMs ===" &&
+              find /mnt/rpms /mnt/rpmbuild -name "*.rpm" -type f 2>/dev/null'
 
       - name: Dump container logs on failure
         if: failure()
@@ -122,27 +129,19 @@ jobs:
         if: always()
         run: df -h / /mnt
 
-      - name: Sign packages
-        env:
-          GPG_KEY: ${{ secrets.LINUX_SURFACE_GPG_KEY }}
-        run: |
-          bash ./.github/scripts/container/exec.sh \
-            -e GPG_KEY \
-            -e GPG_KEY_ID \
-            -- \
-            bash ./.github/scripts/package/fedora.sh sign-packages
-
       - name: Collect built RPMs
         run: |
           mkdir -p built-rpms
-          # Check all possible RPM output locations
-          echo "=== Checking RPM locations ==="
-          find pkg/fedora/kernel-surface/out -name '*.rpm' -type f 2>/dev/null | head -20 || echo "None in out/"
-          find /mnt/rpmbuild -name '*.rpm' -type f 2>/dev/null | head -20 || echo "None in /mnt/rpmbuild/"
-          # Copy RPMs from wherever they ended up
-          find pkg/fedora/kernel-surface/out /mnt/rpmbuild -name '*.rpm' -type f -exec cp {} built-rpms/ \; 2>/dev/null || true
+          # RPMs are on /mnt which is bind-mounted from host
+          find /mnt/rpms /mnt/rpmbuild -name '*.rpm' -type f -exec cp {} built-rpms/ \; 2>/dev/null || true
           echo "=== Collected RPMs ==="
-          ls -lh built-rpms/ || echo "No RPMs found anywhere"
+          ls -lh built-rpms/
+          RPM_COUNT=$(find built-rpms -name '*.rpm' -type f | wc -l)
+          if [[ "$RPM_COUNT" -eq 0 ]]; then
+            echo "::error::No RPM packages were built"
+            exit 1
+          fi
+          echo "Found $RPM_COUNT RPMs"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
