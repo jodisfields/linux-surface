@@ -94,11 +94,27 @@ jobs:
             -- \
             bash ./.github/scripts/package/fedora.sh setup-secureboot
 
-      - name: Build RPM packages
+      - name: Build source RPM
         run: |
           bash ./.github/scripts/container/exec.sh \
             -- \
-            bash ./.github/scripts/package/fedora.sh build-packages
+            bash -c 'cd pkg/fedora/kernel-surface && git config --global user.name "surfacebot" && git config --global user.email "surfacebot@users.noreply.github.com" && python3 build-linux-surface.py --mode srpm --ark-dir kernel-ark --outdir srpm'
+
+      - name: Check disk space after SRPM build
+        if: always()
+        run: df -h /
+
+      - name: Remove kernel-ark tree to free disk
+        run: |
+          bash ./.github/scripts/container/exec.sh \
+            -- \
+            rm -rf pkg/fedora/kernel-surface/kernel-ark
+
+      - name: Rebuild binary RPMs from SRPM
+        run: |
+          bash ./.github/scripts/container/exec.sh \
+            -- \
+            bash -c 'find pkg/fedora/kernel-surface/srpm -name "*.src.rpm" -type f -print0 | xargs -0 -I {} rpmbuild -rb --define "_topdir ${PWD}/pkg/fedora/kernel-surface/rpmbuild" --define "_rpmdir ${PWD}/pkg/fedora/kernel-surface/out" {}'
 
       - name: Sign RPM packages
         env:
