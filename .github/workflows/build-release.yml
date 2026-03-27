@@ -1,16 +1,15 @@
 name: Build Kernel & Publish Release
 
-# Builds the linux-surface kernel for Debian, Arch, and Fedora, then publishes
+# Builds the linux-surface kernel for multiple distributions and publishes
 # a GitHub Release with all artifacts.
 #
 # Triggers:
-#   1. Push a tag matching 'release-*' (e.g. release-6.19.8-1)
+#   1. Push a tag matching 'release-*' or 'kernel-surface-*'
 #   2. Run manually from the Actions tab (workflow_dispatch)
 #
 # Required secrets (optional - build works without them):
 #   SURFACE_SB_KEY        - base64-encoded Secure Boot private key
 #   LINUX_SURFACE_GPG_KEY - base64-encoded GPG private key for signing
-#   LINUX_SURFACE_BOT_TOKEN - GitHub token for release uploads (falls back to GITHUB_TOKEN)
 
 on:
   push:
@@ -20,10 +19,6 @@ on:
 
   workflow_dispatch:
     inputs:
-      kernel_version:
-        description: 'Kernel major version (e.g. 6.19)'
-        required: false
-        default: '6.19'
       create_release:
         description: 'Create a GitHub release'
         required: false
@@ -35,180 +30,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  KERNEL_VERSION: '6.19'
   GPG_KEY_ID: 56C464BAAC421453
-  FEDORA: 43
 
 jobs:
-  build-debian:
-    name: Build Debian Packages
-    runs-on: ubuntu-latest
-    steps:
-      - name: Maximize disk space
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 8192
-          remove-dotnet: true
-          remove-android: true
-          remove-docker-images: true
-          remove-haskell: true
-          remove-codeql: true
-
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Set kernel version from input
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.kernel_version != ''
-        run: echo "KERNEL_VERSION=${{ github.event.inputs.kernel_version }}" >> $GITHUB_ENV
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential fakeroot rsync git wget \
-            zstd lz4 sbsigntool debhelper dpkg-dev pkg-config \
-            libncurses-dev flex bison libssl-dev libelf-dev bc \
-            dwarves cpio kmod python3
-
-      - name: Download kernel source
-        run: |
-          MAJOR_VERSION="${KERNEL_VERSION%.*}"
-          KERNEL_FULL=$(curl -sL https://www.kernel.org/ | grep -oP "linux-${KERNEL_VERSION}\.\d+" | head -1)
-          if [ -z "$KERNEL_FULL" ]; then
-            KERNEL_FULL="linux-${KERNEL_VERSION}"
-          fi
-          TARBALL="${KERNEL_FULL}.tar.xz"
-
-          echo "Downloading kernel ${KERNEL_FULL}..."
-          wget -q "https://cdn.kernel.org/pub/linux/kernel/v${MAJOR_VERSION}.x/${TARBALL}"
-          tar xf "${TARBALL}"
-          mv "${KERNEL_FULL}" linux-src
-          echo "KERNEL_FULL_VERSION=${KERNEL_FULL#linux-}" >> $GITHUB_ENV
-          echo "MAJOR_VERSION=${MAJOR_VERSION}" >> $GITHUB_ENV
-
-      - name: Apply Surface patches
-        run: |
-          cd linux-src
-          git init
-          git config user.email "surfacebot@users.noreply.github.com"
-          git config user.name "surfacebot"
-          git add .
-          git commit -m "Initial kernel source"
-
-          PATCHES="../patches/${MAJOR_VERSION}"
-          if [ -d "${PATCHES}" ]; then
-            for patch in $(find "${PATCHES}" -name '*.patch' -type f | sort); do
-              echo "Applying patch: $(basename $patch)"
-              git apply --index "$patch" || echo "WARNING: Patch $(basename $patch) failed, skipping"
-              git add -A
-              git commit --allow-empty -m "Apply $(basename $patch)"
-            done
-          else
-            echo "No patches found for kernel ${MAJOR_VERSION}"
-          fi
-
-      - name: Configure kernel
-        run: |
-          cd linux-src
-
-          # Start from default config
-          make defconfig
-
-          # Merge Surface-specific config
-          SURFACE_CONFIG="../configs/surface-${MAJOR_VERSION}.config"
-          if [ -f "$SURFACE_CONFIG" ]; then
-            ./scripts/kconfig/merge_config.sh -m .config "$SURFACE_CONFIG"
-          fi
-
-          # Merge CachyOS performance config
-          PERF_CONFIG="../configs/cachyos-performance.config"
-          if [ -f "$PERF_CONFIG" ]; then
-            ./scripts/kconfig/merge_config.sh -m .config "$PERF_CONFIG"
-          fi
-
-          # Merge Surface Laptop Studio 1 config
-          SLS1_CONFIG="../configs/surface-laptop-studio-1.config"
-          if [ -f "$SLS1_CONFIG" ]; then
-            ./scripts/kconfig/merge_config.sh -m .config "$SLS1_CONFIG"
-          fi
-
-          echo '-surface' > localversion
-          make olddefconfig
-
-      - name: Build kernel packages
-        run: |
-          cd linux-src
-          make bindeb-pkg -j"$(nproc)" \
-            LOCALVERSION="-surface" \
-            KDEB_PKGVERSION="${KERNEL_FULL_VERSION}-surface-1"
-
-      - name: Collect artifacts
-        run: |
-          mkdir -p release
-          find . -maxdepth 1 -name '*.deb' -not -name '*libc-dev*' -exec cp {} release/ \;
-          ls -la release/
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: debian-packages
-          path: release/*.deb
-
-  build-arch:
-    name: Build Arch Packages
-    runs-on: ubuntu-latest
-    steps:
-      - name: Maximize disk space
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 5120
-          remove-dotnet: true
-          remove-android: true
-          remove-docker-images: true
-
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Initialize container
-        run: |
-          bash ./.github/scripts/container/create.sh archlinux
-
-      - name: Install build dependencies
-        run: |
-          bash ./.github/scripts/container/exec.sh \
-            -- \
-            bash ./.github/scripts/package/arch.sh setup-builddeps
-
-      - name: Setup secureboot certificate
-        env:
-          SB_KEY: ${{ secrets.SURFACE_SB_KEY }}
-        run: |
-          bash ./.github/scripts/container/exec.sh \
-            -e SB_KEY \
-            -- \
-            bash ./.github/scripts/package/arch.sh setup-secureboot
-
-      - name: Build packages
-        run: |
-          bash ./.github/scripts/container/exec.sh \
-            -- \
-            bash ./.github/scripts/package/arch.sh build-packages
-
-      - name: Sign packages
-        env:
-          GPG_KEY: ${{ secrets.LINUX_SURFACE_GPG_KEY }}
-        run: |
-          bash ./.github/scripts/container/exec.sh \
-            -e GPG_KEY \
-            -e GPG_KEY_ID \
-            -- \
-            bash ./.github/scripts/package/arch.sh sign-packages
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: arch-packages
-          path: pkg/arch/kernel/release
-
   build-fedora:
     name: Build Fedora ${{ matrix.fedora }} Packages
     runs-on: ubuntu-latest
@@ -270,13 +94,125 @@ jobs:
           name: fedora-${{ matrix.fedora }}-packages
           path: pkg/fedora/kernel-surface/out/x86_64
 
+  build-arch:
+    name: Build Arch Packages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Maximize disk space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 5120
+          remove-dotnet: true
+          remove-android: true
+          remove-docker-images: true
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Initialize container
+        run: |
+          bash ./.github/scripts/container/create.sh archlinux
+
+      - name: Install build dependencies
+        run: |
+          bash ./.github/scripts/container/exec.sh \
+            -- \
+            bash ./.github/scripts/package/arch.sh setup-builddeps
+
+      - name: Setup secureboot certificate
+        env:
+          SB_KEY: ${{ secrets.SURFACE_SB_KEY }}
+        run: |
+          bash ./.github/scripts/container/exec.sh \
+            -e SB_KEY \
+            -- \
+            bash ./.github/scripts/package/arch.sh setup-secureboot
+
+      - name: Build packages
+        run: |
+          bash ./.github/scripts/container/exec.sh \
+            -- \
+            bash ./.github/scripts/package/arch.sh build-packages
+
+      - name: Sign packages
+        env:
+          GPG_KEY: ${{ secrets.LINUX_SURFACE_GPG_KEY }}
+        run: |
+          bash ./.github/scripts/container/exec.sh \
+            -e GPG_KEY \
+            -e GPG_KEY_ID \
+            -- \
+            bash ./.github/scripts/package/arch.sh sign-packages
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: arch-packages
+          path: pkg/arch/kernel/release
+
+  build-debian:
+    name: Build Debian Packages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Maximize disk space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 5120
+          remove-dotnet: true
+          remove-android: true
+          remove-docker-images: true
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Initialize containers
+        run: |
+          bash ./.github/scripts/container/create.sh ubuntu:22.04
+
+      - name: Install build dependencies
+        run: |
+          bash ./.github/scripts/container/exec.sh \
+            -- \
+            bash ./.github/scripts/package/debian.sh setup-builddeps
+
+      - name: Setup secureboot certificate
+        env:
+          SB_KEY: ${{ secrets.SURFACE_SB_KEY }}
+        run: |
+          bash ./.github/scripts/container/exec.sh \
+            -e SB_KEY \
+            -- \
+            bash ./.github/scripts/package/debian.sh setup-secureboot
+
+      - name: Build packages
+        run: |
+          bash ./.github/scripts/container/exec.sh \
+            -- \
+            bash ./.github/scripts/package/debian.sh build-packages
+
+      - name: Sign packages
+        env:
+          GPG_KEY: ${{ secrets.LINUX_SURFACE_GPG_KEY }}
+        run: |
+          bash ./.github/scripts/container/exec.sh \
+            -e GPG_KEY \
+            -e GPG_KEY_ID \
+            -- \
+            bash ./.github/scripts/package/debian.sh sign-packages
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: debian-packages
+          path: pkg/debian/release
+
   release:
     name: Create GitHub Release
     if: |
       always() &&
-      (needs.build-debian.result == 'success' || needs.build-arch.result == 'success' || needs.build-fedora.result == 'success') &&
+      (needs.build-fedora.result == 'success' || needs.build-arch.result == 'success' || needs.build-debian.result == 'success') &&
       (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true'))
-    needs: [build-debian, build-arch, build-fedora]
+    needs: [build-fedora, build-arch, build-debian]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -290,12 +226,13 @@ jobs:
           path: artifacts
         continue-on-error: true
 
-      - name: Flatten artifacts
+      - name: Flatten artifacts into release directory
         run: |
           mkdir -p release-assets
-          find artifacts -type f \( -name '*.deb' -o -name '*.pkg.tar.zst' -o -name '*.rpm' \) \
+          find artifacts -type f \( -name '*.rpm' -o -name '*.pkg.tar.zst' -o -name '*.deb' \) \
             -exec cp {} release-assets/ \;
-          ls -la release-assets/
+          echo "Release assets:"
+          ls -lh release-assets/
 
       - name: Generate release tag
         id: tag
@@ -317,38 +254,32 @@ jobs:
 
             Built from [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}).
 
-            ### Features
-            - All linux-surface patches for Microsoft Surface device support
-            - CachyOS-inspired performance optimizations:
-              - BORE CPU scheduler for improved desktop responsiveness
-              - 1000 Hz timer frequency for low latency
-              - Full kernel preemption with dynamic mode switching
-              - BBR3 TCP congestion control for better network throughput
-              - MGLRU (Multi-Generational LRU) for improved memory management
-              - Transparent HugePages (always mode) for reduced TLB pressure
-              - ZSWAP with zstd compression enabled by default
-              - zstd-compressed kernel modules
-              - NTSYNC for Wine/Proton compatibility
-              - DAMON for proactive memory management
-              - Hardware crypto acceleration (AES-NI, etc.)
-              - Full tickless kernel (NO_HZ_FULL)
-              - RCU optimizations (boost, lazy, NOCB)
-            - Enhanced Surface Laptop Studio 1 compatibility:
-              - Full dGPU (NVIDIA RTX 3050 Ti) hotplug via Surface Hotplug driver
-              - IPTS pen/touch input support
-              - Thunderbolt 4 / USB4 support
-              - Intel Tiger Lake platform optimizations
-              - Thermal management with dedicated thermald config
-              - Intel Iris Xe + NVIDIA dGPU dual-GPU support
-              - WiFi 6E (AX210) and Bluetooth support
-              - Tablet mode detection via accelerometer/gyro sensors
+            ### Included Patches
+            - All linux-surface hardware patches (SAM, IPTS/ITHC, cameras, type-cover, etc.)
+            - **BORE** CPU scheduler for improved desktop responsiveness
+            - **BBR v3** TCP congestion control
+
+            ### Performance Config (CachyOS-inspired)
+            - 1000 Hz timer, full preemption, full tickless (NO_HZ_FULL)
+            - MGLRU, Transparent HugePages (always), ZSWAP with zstd
+            - sched-ext support, RCU boost/lazy, DAMON reclaim
+            - Hardware crypto acceleration, WireGuard built-in
+            - NTSYNC for Wine/Proton, KSM, PSI
+            - Runtime sysctl tuning (dirty ratios, BBR3 default, swappiness)
+
+            ### Surface Laptop Studio 1 Enhancements
+            - dGPU hotplug (NVIDIA RTX 3050 Ti), Thunderbolt 4/USB4
+            - IPTS pen/touch, tablet mode sensors
+            - Optimized thermald configuration included
 
             ### Installation
 
-            **Debian/Ubuntu:**
+            **Fedora (recommended for SLS1):**
             ```bash
-            sudo dpkg -i linux-image-*.deb linux-headers-*.deb
-            sudo update-grub
+            sudo dnf install ./kernel-surface-*.rpm
+            sudo cp contrib/thermald/surface_laptop_studio_1/thermal-conf.xml /etc/thermald/
+            sudo cp contrib/thermald/surface_laptop_studio_1/thermal-cpu-cdev-order.xml /etc/thermald/
+            sudo systemctl restart thermald
             ```
 
             **Arch Linux:**
@@ -356,15 +287,10 @@ jobs:
             sudo pacman -U linux-surface-*.pkg.tar.zst linux-surface-headers-*.pkg.tar.zst
             ```
 
-            **Fedora:**
+            **Debian/Ubuntu:**
             ```bash
-            sudo rpm -ivh kernel-surface-*.rpm
+            sudo dpkg -i linux-image-*.deb linux-headers-*.deb
             ```
-
-            ### Surface Laptop Studio 1 Users
-            - Install `iptsd` for touchscreen/pen support
-            - Install `linux-firmware` for WiFi/Bluetooth firmware
-            - Copy `contrib/thermald/surface_laptop_studio_1/thermal-conf.xml` to `/etc/thermald/` for optimized thermal management
           draft: false
           prerelease: ${{ github.event_name == 'workflow_dispatch' }}
           files: release-assets/*
