@@ -42,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        fedora: [42, 43]
+        fedora: [41, 42]
     steps:
       - name: Maximize disk space
         uses: easimon/maximize-build-space@master
