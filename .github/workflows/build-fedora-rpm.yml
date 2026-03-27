@@ -70,27 +70,15 @@ jobs:
           sudo docker image prune -af 2>/dev/null || true
           sudo apt-get autoremove -y 2>/dev/null || true
           sudo apt-get clean 2>/dev/null || true
-          # Symlink /var/lib/docker to /mnt for more space
-          sudo systemctl stop docker
-          sudo rm -rf /mnt/docker-storage
-          sudo mv /var/lib/docker /mnt/docker-storage
-          sudo ln -s /mnt/docker-storage /var/lib/docker
-          sudo systemctl start docker
-          df -h / /mnt
+          df -h /
 
       - name: Checkout code
         uses: actions/checkout@v6
 
       - name: Initialize containers
         run: |
-          # Custom container create with /mnt mounted for extra build space
-          if command -v docker &> /dev/null; then DOCKER=docker; else DOCKER=podman; fi
-          $DOCKER run -d --name "${GITHUB_REPOSITORY_ID}" \
-            -v "${GITHUB_WORKSPACE}:/working" \
-            -v "/mnt:/mnt" \
-            --workdir "/working" \
-            --entrypoint tail \
-            "registry.fedoraproject.org/fedora:${{ env.FEDORA }}" -f /dev/null
+          bash ./.github/scripts/container/create.sh \
+            registry.fedoraproject.org/fedora:${{ env.FEDORA }}
 
       - name: Install build dependencies
         run: |
@@ -111,25 +99,7 @@ jobs:
         run: |
           bash ./.github/scripts/container/exec.sh \
             -- \
-            bash -c '
-              set -euxo pipefail
-              cd pkg/fedora/kernel-surface
-              git config --global user.name surfacebot
-              git config --global user.email surfacebot@users.noreply.github.com
-              python3 build-linux-surface.py --mode srpm --ark-dir /mnt/kernel-ark --outdir srpm 2>&1 | tee /mnt/build.log
-              rm -rf /mnt/kernel-ark
-              df -h / /mnt
-              find srpm -name "*.src.rpm" -type f -print0 | xargs -0 -I {} \
-                rpmbuild -rb --define "_topdir /mnt/rpmbuild" --define "_rpmdir ${PWD}/out" {} 2>&1 | tee -a /mnt/build.log
-            '
-
-      - name: Upload build log
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: build-log
-          path: /mnt/build.log
-          retention-days: 7
+            bash ./.github/scripts/package/fedora.sh build-packages
 
       - name: Check disk space
         if: always()
