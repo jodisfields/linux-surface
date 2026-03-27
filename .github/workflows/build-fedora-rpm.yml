@@ -135,7 +135,7 @@ jobs:
           echo "rpm_count=$RPM_COUNT" >> $GITHUB_OUTPUT
 
       - name: Upload RPM artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         with:
           name: kernel-surface-fedora-${{ env.FEDORA }}-rpms
           path: pkg/fedora/kernel-surface/out/x86_64
@@ -163,7 +163,7 @@ jobs:
             contrib
 
       - name: Download RPM artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v6
         with:
           name: kernel-surface-fedora-${{ env.FEDORA }}-rpms
           path: release-rpms
