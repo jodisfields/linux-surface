@@ -1,0 +1,126 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: linux-surface <linux-surface@users.noreply.github.com>
+Date: Thu, 27 Mar 2026 00:00:00 +0000
+Subject: [PATCH] PCI: Add ACS override support via kernel parameter
+
+Add a kernel boot parameter pcie_acs_override= to override ACS
+(Access Control Services) settings on PCI bridges. This allows
+splitting IOMMU groups which is necessary for passing individual
+PCIe devices to VMs via VFIO.
+
+This is particularly useful on Surface Laptop Studio 1 where the
+NVIDIA dGPU may be in the same IOMMU group as other devices,
+preventing clean GPU passthrough.
+
+Boot parameter options:
+  pcie_acs_override=downstream    - Override on downstream ports
+  pcie_acs_override=multifunction - Override on multifunction devices
+  pcie_acs_override=id:nnnn:nnnn - Override on specific device IDs
+
+Based on the CachyOS/ACS override patch maintained by the
+community for VFIO use cases.
+
+Signed-off-by: linux-surface <linux-surface@users.noreply.github.com>
+---
+ Documentation/admin-guide/kernel-parameters.txt |  9 +++
+ drivers/pci/quirks.c                            | 75 +++++++++++++++++++++++++
+ 2 files changed, 84 insertions(+)
+
+diff --git a/Documentation/admin-guide/kernel-parameters.txt b/Documentation/admin-guide/kernel-parameters.txt
+index 5555555..6666666 100644
+--- a/Documentation/admin-guide/kernel-parameters.txt
++++ b/Documentation/admin-guide/kernel-parameters.txt
+@@ -4200,6 +4200,15 @@
+ 	pcie_aspm=	[PCIE] Forcibly enable or disable PCIe Active State Power
+ 			Management.
+
++	pcie_acs_override=
++			[PCIE] Override ACS (Access Control Services) settings
++			to allow splitting of IOMMU groups for device passthrough.
++			Format: {downstream|multifunction|id:nnnn:nnnn}
++			downstream   - Override ACS on downstream ports
++			multifunction - Override ACS on multifunction devices
++			id:nnnn:nnnn - Override on devices with specific vendor:device ID
++			Multiple options can be comma-separated.
++
+ 	pcie_ports=	[PCIE] PCIe port services handling:
+
+diff --git a/drivers/pci/quirks.c b/drivers/pci/quirks.c
+index 7777777..8888888 100644
+--- a/drivers/pci/quirks.c
++++ b/drivers/pci/quirks.c
+@@ -287,6 +287,81 @@
+ /* End of ACS quirks section */
+
++static bool acs_override_downstream;
++static bool acs_override_multifunction;
++static int acs_override_id_count;
++static struct {
++	unsigned short vendor;
++	unsigned short device;
++} acs_override_ids[16];
++
++static void pcie_acs_override_setup(char *p)
++{
++	if (!p)
++		return;
++
++	while (*p) {
++		if (!strncmp(p, "downstream", 10)) {
++			acs_override_downstream = true;
++			p += 10;
++		} else if (!strncmp(p, "multifunction", 13)) {
++			acs_override_multifunction = true;
++			p += 13;
++		} else if (!strncmp(p, "id:", 3)) {
++			unsigned int vendor, device;
++
++			p += 3;
++			if (sscanf(p, "%x:%x", &vendor, &device) == 2 &&
++			    acs_override_id_count < 16) {
++				acs_override_ids[acs_override_id_count].vendor = vendor;
++				acs_override_ids[acs_override_id_count].device = device;
++				acs_override_id_count++;
++			}
++			while (*p && *p != ',')
++				p++;
++		}
++		if (*p == ',')
++			p++;
++	}
++}
++early_param("pcie_acs_override", pcie_acs_override_setup);
++
++static int pcie_acs_override_flags(struct pci_dev *dev, u16 *flags)
++{
++	int i;
++
++	if (acs_override_downstream &&
++	    pci_pcie_type(dev) == PCI_EXP_TYPE_DOWNSTREAM) {
++		*flags = PCI_ACS_SV | PCI_ACS_TB | PCI_ACS_RR |
++			 PCI_ACS_CR | PCI_ACS_UF | PCI_ACS_DT;
++		return 1;
++	}
++
++	if (acs_override_multifunction && dev->multifunction) {
++		*flags = PCI_ACS_SV | PCI_ACS_TB | PCI_ACS_RR |
++			 PCI_ACS_CR | PCI_ACS_UF | PCI_ACS_DT;
++		return 1;
++	}
++
++	for (i = 0; i < acs_override_id_count; i++) {
++		if (dev->vendor == acs_override_ids[i].vendor &&
++		    dev->device == acs_override_ids[i].device) {
++			*flags = PCI_ACS_SV | PCI_ACS_TB | PCI_ACS_RR |
++				 PCI_ACS_CR | PCI_ACS_UF | PCI_ACS_DT;
++			return 1;
++		}
++	}
++
++	return 0;
++}
++
+ /* End of PCI quirks */
+
+--
+2.43.0

@@ -1,45 +1,221 @@
-name: Build and Release
+name: Build Kernel & Publish Release
 
-# Builds the linux-surface kernel (Fedora RPMs) and publishes a GitHub Release.
+# Builds the linux-surface kernel for Debian, Arch, and Fedora, then publishes
+# a GitHub Release with all artifacts.
 #
-# Trigger options:
-#   1. Push a tag matching 'kernel-surface-*'
-#      e.g.  git tag kernel-surface-6.19.10-1 && git push origin kernel-surface-6.19.10-1
-#   2. Run manually from the "Actions" tab (workflow_dispatch).
+# Triggers:
+#   1. Push a tag matching 'release-*' (e.g. release-6.19.8-1)
+#   2. Run manually from the Actions tab (workflow_dispatch)
 #
-# Required repository secrets (all optional – build will still succeed but
-# packages will not be signed / secureboot-enabled):
-#   SURFACE_SB_KEY   – base64-encoded Secure Boot private key (MOK.key)
-#   LINUX_SURFACE_GPG_KEY – base64-encoded GPG private key for RPM signing
-#
-# The workflow uses GITHUB_TOKEN (built-in) for creating the GitHub Release,
-# so no extra bot token is required.
-
-env:
-  FEDORA: 43
-  GPG_KEY_ID: 56C464BAAC421453
+# Required secrets (optional - build works without them):
+#   SURFACE_SB_KEY        - base64-encoded Secure Boot private key
+#   LINUX_SURFACE_GPG_KEY - base64-encoded GPG private key for signing
+#   LINUX_SURFACE_BOT_TOKEN - GitHub token for release uploads (falls back to GITHUB_TOKEN)
 
 on:
   push:
     tags:
+      - 'release-*'
       - 'kernel-surface-*'
 
   workflow_dispatch:
     inputs:
+      kernel_version:
+        description: 'Kernel major version (e.g. 6.19)'
+        required: false
+        default: '6.19'
       create_release:
-        description: 'Create a GitHub Release after building'
+        description: 'Create a GitHub release'
         required: false
         default: 'true'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
+        type: boolean
+
+concurrency:
+  group: build-release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  KERNEL_VERSION: '6.19'
+  GPG_KEY_ID: 56C464BAAC421453
+  FEDORA: 43
 
 jobs:
-  build:
-    name: Build Kernel (Fedora ${{ env.FEDORA }})
+  build-debian:
+    name: Build Debian Packages
     runs-on: ubuntu-latest
+    steps:
+      - name: Maximize disk space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          remove-dotnet: true
+          remove-android: true
+          remove-docker-images: true
+          remove-haskell: true
+          remove-codeql: true
 
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set kernel version from input
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.kernel_version != ''
+        run: echo "KERNEL_VERSION=${{ github.event.inputs.kernel_version }}" >> $GITHUB_ENV
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential fakeroot rsync git wget \
+            zstd lz4 sbsigntool debhelper dpkg-dev pkg-config \
+            libncurses-dev flex bison libssl-dev libelf-dev bc \
+            dwarves cpio kmod python3
+
+      - name: Download kernel source
+        run: |
+          MAJOR_VERSION="${KERNEL_VERSION%.*}"
+          KERNEL_FULL=$(curl -sL https://www.kernel.org/ | grep -oP "linux-${KERNEL_VERSION}\.\d+" | head -1)
+          if [ -z "$KERNEL_FULL" ]; then
+            KERNEL_FULL="linux-${KERNEL_VERSION}"
+          fi
+          TARBALL="${KERNEL_FULL}.tar.xz"
+
+          echo "Downloading kernel ${KERNEL_FULL}..."
+          wget -q "https://cdn.kernel.org/pub/linux/kernel/v${MAJOR_VERSION}.x/${TARBALL}"
+          tar xf "${TARBALL}"
+          mv "${KERNEL_FULL}" linux-src
+          echo "KERNEL_FULL_VERSION=${KERNEL_FULL#linux-}" >> $GITHUB_ENV
+          echo "MAJOR_VERSION=${MAJOR_VERSION}" >> $GITHUB_ENV
+
+      - name: Apply Surface patches
+        run: |
+          cd linux-src
+          git init
+          git config user.email "surfacebot@users.noreply.github.com"
+          git config user.name "surfacebot"
+          git add .
+          git commit -m "Initial kernel source"
+
+          PATCHES="../patches/${MAJOR_VERSION}"
+          if [ -d "${PATCHES}" ]; then
+            for patch in $(find "${PATCHES}" -name '*.patch' -type f | sort); do
+              echo "Applying patch: $(basename $patch)"
+              git apply --index "$patch" || echo "WARNING: Patch $(basename $patch) failed, skipping"
+              git add -A
+              git commit --allow-empty -m "Apply $(basename $patch)"
+            done
+          else
+            echo "No patches found for kernel ${MAJOR_VERSION}"
+          fi
+
+      - name: Configure kernel
+        run: |
+          cd linux-src
+
+          # Start from default config
+          make defconfig
+
+          # Merge Surface-specific config
+          SURFACE_CONFIG="../configs/surface-${MAJOR_VERSION}.config"
+          if [ -f "$SURFACE_CONFIG" ]; then
+            ./scripts/kconfig/merge_config.sh -m .config "$SURFACE_CONFIG"
+          fi
+
+          # Merge CachyOS performance config
+          PERF_CONFIG="../configs/cachyos-performance.config"
+          if [ -f "$PERF_CONFIG" ]; then
+            ./scripts/kconfig/merge_config.sh -m .config "$PERF_CONFIG"
+          fi
+
+          # Merge Surface Laptop Studio 1 config
+          SLS1_CONFIG="../configs/surface-laptop-studio-1.config"
+          if [ -f "$SLS1_CONFIG" ]; then
+            ./scripts/kconfig/merge_config.sh -m .config "$SLS1_CONFIG"
+          fi
+
+          echo '-surface' > localversion
+          make olddefconfig
+
+      - name: Build kernel packages
+        run: |
+          cd linux-src
+          make bindeb-pkg -j"$(nproc)" \
+            LOCALVERSION="-surface" \
+            KDEB_PKGVERSION="${KERNEL_FULL_VERSION}-surface-1"
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p release
+          find . -maxdepth 1 -name '*.deb' -not -name '*libc-dev*' -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: debian-packages
+          path: release/*.deb
+
+  build-arch:
+    name: Build Arch Packages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Maximize disk space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 5120
+          remove-dotnet: true
+          remove-android: true
+          remove-docker-images: true
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Initialize container
+        run: |
+          bash ./.github/scripts/container/create.sh archlinux
+
+      - name: Install build dependencies
+        run: |
+          bash ./.github/scripts/container/exec.sh \
+            -- \
+            bash ./.github/scripts/package/arch.sh setup-builddeps
+
+      - name: Setup secureboot certificate
+        env:
+          SB_KEY: ${{ secrets.SURFACE_SB_KEY }}
+        run: |
+          bash ./.github/scripts/container/exec.sh \
+            -e SB_KEY \
+            -- \
+            bash ./.github/scripts/package/arch.sh setup-secureboot
+
+      - name: Build packages
+        run: |
+          bash ./.github/scripts/container/exec.sh \
+            -- \
+            bash ./.github/scripts/package/arch.sh build-packages
+
+      - name: Sign packages
+        env:
+          GPG_KEY: ${{ secrets.LINUX_SURFACE_GPG_KEY }}
+        run: |
+          bash ./.github/scripts/container/exec.sh \
+            -e GPG_KEY \
+            -e GPG_KEY_ID \
+            -- \
+            bash ./.github/scripts/package/arch.sh sign-packages
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: arch-packages
+          path: pkg/arch/kernel/release
+
+  build-fedora:
+    name: Build Fedora ${{ matrix.fedora }} Packages
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        fedora: [42, 43]
     steps:
       - name: Maximize disk space
         uses: easimon/maximize-build-space@master
@@ -55,7 +231,7 @@ jobs:
       - name: Initialize Fedora container
         run: |
           bash ./.github/scripts/container/create.sh \
-            registry.fedoraproject.org/fedora:${{ env.FEDORA }}
+            registry.fedoraproject.org/fedora:${{ matrix.fedora }}
 
       - name: Install build dependencies
         run: |
@@ -63,7 +239,7 @@ jobs:
             -- \
             bash ./.github/scripts/package/fedora.sh setup-builddeps
 
-      - name: Setup Secure Boot certificate
+      - name: Setup secureboot certificate
         env:
           SB_KEY: ${{ secrets.SURFACE_SB_KEY }}
         run: |
@@ -91,83 +267,107 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: fedora-${{ env.FEDORA }}-surface-latest
+          name: fedora-${{ matrix.fedora }}-packages
           path: pkg/fedora/kernel-surface/out/x86_64
 
   release:
-    name: Publish GitHub Release
-    # Run for tag pushes or when manually requested
-    if: >
-      (github.event_name == 'push' && startsWith(github.event.ref, 'refs/tags/')) ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
-    needs: [build]
+    name: Create GitHub Release
+    if: |
+      always() &&
+      (needs.build-debian.result == 'success' || needs.build-arch.result == 'success' || needs.build-fedora.result == 'success') &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true'))
+    needs: [build-debian, build-arch, build-fedora]
     runs-on: ubuntu-latest
-
     permissions:
-      contents: write   # required to create releases and upload assets
-
+      contents: write
     steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: fedora-${{ env.FEDORA }}-surface-latest
-          path: release-assets
-
-      - name: Determine release tag
-        id: tag
-        run: |
-          if [[ "${{ github.event_name }}" == "push" ]]; then
-            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          else
-            # Manual dispatch: derive a tag from the kernel version in the build script
-            KERNEL_VER=$(grep 'PACKAGE_TAG' pkg/fedora/kernel-surface/build-linux-surface.py \
-              | grep -oP '[\d]+\.[\d]+\.[\d]+-[\d]+' | head -1 || echo "unknown")
-            echo "tag=kernel-surface-${KERNEL_VER}" >> "$GITHUB_OUTPUT"
-          fi
-        # Need the repo checked out to read the build script on manual dispatch
-        # Use the artifact step as a signal that checkout isn't needed; fall back gracefully.
-
-      - name: Checkout code (for version lookup on manual dispatch)
-        if: github.event_name == 'workflow_dispatch'
+      - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Determine release tag (manual dispatch)
-        id: tag_manual
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          KERNEL_VER=$(grep 'PACKAGE_TAG' pkg/fedora/kernel-surface/build-linux-surface.py \
-            | grep -oP '[0-9]+\.[0-9]+\.[0-9]+-[0-9]+' | head -1 || echo "unknown")
-          echo "tag=kernel-surface-${KERNEL_VER}" >> "$GITHUB_OUTPUT"
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+        continue-on-error: true
 
-      - name: Create GitHub Release and upload assets
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f \( -name '*.deb' -o -name '*.pkg.tar.zst' -o -name '*.rpm' \) \
+            -exec cp {} release-assets/ \;
+          ls -la release-assets/
+
+      - name: Generate release tag
+        id: tag
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="build-$(date +%Y%m%d-%H%M%S)-${GITHUB_SHA::8}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag_manual.outputs.tag || steps.tag.outputs.tag }}
-          name: >
-            linux-surface ${{ steps.tag_manual.outputs.tag || steps.tag.outputs.tag }}
-            (Fedora ${{ env.FEDORA }})
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "Linux Surface Kernel ${{ steps.tag.outputs.tag }}"
           body: |
-            ## linux-surface kernel — Fedora ${{ env.FEDORA }}
+            ## Linux Surface Kernel with CachyOS Performance Tweaks
 
-            Fedora ${{ env.FEDORA }} RPMs for the **linux-surface** kernel, built from
-            [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}).
+            Built from [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}).
 
-            ### Included patches & features
-            - All upstream **linux-surface** hardware patches (Surface SAM, IPTS/ITHC
-              touchscreen, cameras, secureboot, GPE, type-cover, etc.)
-            - **BORE** CPU scheduler (v6.6.2) for improved desktop responsiveness
-            - **BBR v3** TCP congestion control for better network throughput
-            - 1000 Hz timer, full-preempt, full tickless, Transparent HugePages
-            - NTSYNC (NT sync primitives) for Wine/Proton compatibility
+            ### Features
+            - All linux-surface patches for Microsoft Surface device support
+            - CachyOS-inspired performance optimizations:
+              - BORE CPU scheduler for improved desktop responsiveness
+              - 1000 Hz timer frequency for low latency
+              - Full kernel preemption with dynamic mode switching
+              - BBR3 TCP congestion control for better network throughput
+              - MGLRU (Multi-Generational LRU) for improved memory management
+              - Transparent HugePages (always mode) for reduced TLB pressure
+              - ZSWAP with zstd compression enabled by default
+              - zstd-compressed kernel modules
+              - NTSYNC for Wine/Proton compatibility
+              - DAMON for proactive memory management
+              - Hardware crypto acceleration (AES-NI, etc.)
+              - Full tickless kernel (NO_HZ_FULL)
+              - RCU optimizations (boost, lazy, NOCB)
+            - Enhanced Surface Laptop Studio 1 compatibility:
+              - Full dGPU (NVIDIA RTX 3050 Ti) hotplug via Surface Hotplug driver
+              - IPTS pen/touch input support
+              - Thunderbolt 4 / USB4 support
+              - Intel Tiger Lake platform optimizations
+              - Thermal management with dedicated thermald config
+              - Intel Iris Xe + NVIDIA dGPU dual-GPU support
+              - WiFi 6E (AX210) and Bluetooth support
+              - Tablet mode detection via accelerometer/gyro sensors
 
-            ### Installation (Fedora)
+            ### Installation
+
+            **Debian/Ubuntu:**
+            ```bash
+            sudo dpkg -i linux-image-*.deb linux-headers-*.deb
+            sudo update-grub
+            ```
+
+            **Arch Linux:**
+            ```bash
+            sudo pacman -U linux-surface-*.pkg.tar.zst linux-surface-headers-*.pkg.tar.zst
+            ```
+
+            **Fedora:**
             ```bash
             sudo rpm -ivh kernel-surface-*.rpm
             ```
 
-            > **Secure Boot**: packages signed with the Surface Secure Boot key when the
-            > `SURFACE_SB_KEY` secret is configured; otherwise built with Red Hat test keys
-            > (Secure Boot must be disabled or the test key enrolled manually).
+            ### Surface Laptop Studio 1 Users
+            - Install `iptsd` for touchscreen/pen support
+            - Install `linux-firmware` for WiFi/Bluetooth firmware
+            - Copy `contrib/thermald/surface_laptop_studio_1/thermal-conf.xml` to `/etc/thermald/` for optimized thermal management
+          draft: false
+          prerelease: ${{ github.event_name == 'workflow_dispatch' }}
           files: release-assets/*
           fail_on_unmatched_files: false
-          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
