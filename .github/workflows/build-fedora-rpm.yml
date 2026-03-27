@@ -57,21 +57,40 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: Maximize disk space
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 5120
-          remove-dotnet: true
-          remove-android: true
-          remove-docker-images: true
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /usr/share/swift /opt/hostedtoolcache \
+            /usr/local/graalvm /usr/local/.ghcup /usr/local/share/powershell \
+            /usr/local/share/chromium /usr/local/julia* /opt/pipx \
+            /usr/share/az_* /opt/microsoft /usr/share/miniconda \
+            /usr/local/aws-* /usr/local/share/vcpkg /usr/share/kotlinc \
+            /usr/share/gradle* /usr/share/sbt /usr/lib/google-cloud-sdk \
+            /usr/lib/jvm 2>/dev/null || true
+          sudo docker image prune -af 2>/dev/null || true
+          sudo apt-get autoremove -y 2>/dev/null || true
+          sudo apt-get clean 2>/dev/null || true
+          # Symlink /var/lib/docker to /mnt for more space
+          sudo systemctl stop docker
+          sudo rm -rf /mnt/docker-storage
+          sudo mv /var/lib/docker /mnt/docker-storage
+          sudo ln -s /mnt/docker-storage /var/lib/docker
+          sudo systemctl start docker
+          df -h / /mnt
 
       - name: Checkout code
         uses: actions/checkout@v6
 
       - name: Initialize containers
         run: |
-          bash ./.github/scripts/container/create.sh \
-            registry.fedoraproject.org/fedora:${{ env.FEDORA }}
+          # Custom container create with /mnt mounted for extra build space
+          if command -v docker &> /dev/null; then DOCKER=docker; else DOCKER=podman; fi
+          $DOCKER run -d --name "${GITHUB_REPOSITORY_ID}" \
+            -v "${GITHUB_WORKSPACE}:/working" \
+            -v "/mnt:/mnt" \
+            --workdir "/working" \
+            --entrypoint tail \
+            "registry.fedoraproject.org/fedora:${{ env.FEDORA }}" -f /dev/null
 
       - name: Install build dependencies
         run: |
@@ -88,9 +107,19 @@ jobs:
             -- \
             bash ./.github/scripts/package/fedora.sh setup-secureboot
 
+      - name: Setup build directories on /mnt
+        run: |
+          # Use /mnt (~60GB) for large build artifacts to avoid filling root
+          sudo mkdir -p /mnt/kernel-ark /mnt/rpmbuild
+          sudo chown -R 0:0 /mnt/kernel-ark /mnt/rpmbuild
+          bash ./.github/scripts/container/exec.sh \
+            -- \
+            bash -c 'ln -sfn /mnt/kernel-ark pkg/fedora/kernel-surface/kernel-ark'
+
       - name: Build packages
         run: |
           bash ./.github/scripts/container/exec.sh \
+            -e MAKEFLAGS="-j$(nproc)" \
             -- \
             bash ./.github/scripts/package/fedora.sh build-packages
 
