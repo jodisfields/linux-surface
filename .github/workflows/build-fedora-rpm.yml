@@ -75,17 +75,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Move build directory to /mnt
+      - name: Symlink heavy build dirs to /mnt
         run: |
-          # The kernel-ark clone + rpmbuild need ~40GB. Move the Fedora build
-          # dir to /mnt (~60GB) and symlink it back so all scripts work unchanged.
-          sudo mkdir -p /mnt/fedora-build
-          sudo chown "$(id -u):$(id -g)" /mnt/fedora-build
-          # Move the kernel-surface build dir contents to /mnt
-          cp -a pkg/fedora/kernel-surface/. /mnt/fedora-build/
-          rm -rf pkg/fedora/kernel-surface
-          ln -s /mnt/fedora-build pkg/fedora/kernel-surface
-          ls -la pkg/fedora/kernel-surface/
+          # kernel-ark clone (~5GB) + rpmbuild (~30GB) need /mnt space.
+          # Create symlinks ONLY — do NOT mkdir the targets. build-ark.py
+          # checks os.path.exists() which follows symlinks; a dangling
+          # symlink returns False, so git clone will create the target dir.
+          # rpmbuild/srpm targets need to exist for rpmbuild to work.
+          sudo mkdir -p /mnt/rpmbuild /mnt/srpm
+          sudo chown "$(id -u):$(id -g)" /mnt/rpmbuild /mnt/srpm
+          ln -sfn /mnt/kernel-ark pkg/fedora/kernel-surface/kernel-ark
+          ln -sfn /mnt/rpmbuild pkg/fedora/kernel-surface/rpmbuild
+          ln -sfn /mnt/srpm pkg/fedora/kernel-surface/srpm
+          # Verify: kernel-ark symlink should be dangling
+          ls -la pkg/fedora/kernel-surface/kernel-ark || true
+          test ! -e pkg/fedora/kernel-surface/kernel-ark && echo "kernel-ark symlink is dangling (good)" || echo "WARNING: kernel-ark target exists"
           df -h / /mnt
 
       - name: Initialize containers
@@ -138,7 +142,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: kernel-surface-fedora-${{ env.FEDORA }}-rpms
-          path: /mnt/fedora-build/out/x86_64
+          path: pkg/fedora/kernel-surface/out/x86_64
           retention-days: 30
 
   release:
