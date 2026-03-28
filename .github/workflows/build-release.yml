@@ -15,8 +15,11 @@ name: Build and Release
 # The workflow uses GITHUB_TOKEN (built-in) for creating the GitHub Release,
 # so no extra bot token is required.
 
+permissions:
+  contents: read
+
 env:
-  FEDORA: 43
+  FEDORA: 42
   GPG_KEY_ID: 56C464BAAC421453
 
 on:
@@ -42,7 +45,7 @@ jobs:
 
     steps:
       - name: Maximize disk space
-        uses: easimon/maximize-build-space@master
+        uses: easimon/maximize-build-space@v10
         with:
           root-reserve-mb: 5120
           remove-dotnet: true
@@ -107,6 +110,9 @@ jobs:
       contents: write   # required to create releases and upload assets
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
       - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
@@ -119,32 +125,21 @@ jobs:
           if [[ "${{ github.event_name }}" == "push" ]]; then
             echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           else
-            # Manual dispatch: derive a tag from the kernel version in the build script
             KERNEL_VER=$(grep 'PACKAGE_TAG' pkg/fedora/kernel-surface/build-linux-surface.py \
-              | grep -oP '[\d]+\.[\d]+\.[\d]+-[\d]+' | head -1 || echo "unknown")
+              | grep -oP '[0-9]+\.[0-9]+\.[0-9]+-[0-9]+' | head -1)
+            if [[ -z "$KERNEL_VER" ]]; then
+              echo "::error::Failed to extract kernel version from PACKAGE_TAG"
+              exit 1
+            fi
             echo "tag=kernel-surface-${KERNEL_VER}" >> "$GITHUB_OUTPUT"
           fi
-        # Need the repo checked out to read the build script on manual dispatch
-        # Use the artifact step as a signal that checkout isn't needed; fall back gracefully.
-
-      - name: Checkout code (for version lookup on manual dispatch)
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/checkout@v6
-
-      - name: Determine release tag (manual dispatch)
-        id: tag_manual
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          KERNEL_VER=$(grep 'PACKAGE_TAG' pkg/fedora/kernel-surface/build-linux-surface.py \
-            | grep -oP '[0-9]+\.[0-9]+\.[0-9]+-[0-9]+' | head -1 || echo "unknown")
-          echo "tag=kernel-surface-${KERNEL_VER}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release and upload assets
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag_manual.outputs.tag || steps.tag.outputs.tag }}
+          tag_name: ${{ steps.tag.outputs.tag }}
           name: >
-            linux-surface ${{ steps.tag_manual.outputs.tag || steps.tag.outputs.tag }}
+            linux-surface ${{ steps.tag.outputs.tag }}
             (Fedora ${{ env.FEDORA }})
           body: |
             ## linux-surface kernel — Fedora ${{ env.FEDORA }}
