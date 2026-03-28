@@ -48,13 +48,35 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: Maximize disk space
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 5120
-          remove-dotnet: true
-          remove-android: true
-          remove-docker-images: true
+      - name: Free up disk space and relocate Docker to /mnt
+        run: |
+          echo "=== Before cleanup ==="
+          df -h / /mnt
+          # Remove large pre-installed toolchains (~30GB)
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /usr/share/swift /opt/hostedtoolcache \
+            /usr/local/graalvm /usr/local/.ghcup /usr/local/share/powershell \
+            /usr/local/share/chromium /usr/local/julia* /opt/pipx \
+            /usr/share/az_* /opt/microsoft /usr/share/miniconda \
+            /usr/local/aws-* /usr/local/share/vcpkg /usr/share/kotlinc \
+            /usr/share/gradle* /usr/share/sbt /usr/lib/google-cloud-sdk \
+            /usr/lib/jvm 2>/dev/null || true
+          sudo docker image prune -af 2>/dev/null || true
+          sudo apt-get autoremove -y 2>/dev/null || true
+          sudo apt-get clean 2>/dev/null || true
+          # Move Docker data directory to /mnt (~60GB partition).
+          # This is critical: the Fedora container's overlay filesystem
+          # (where dnf installs packages and the kernel build runs) lives
+          # under /var/lib/docker. With maximize-build-space, root is only
+          # 5GB which is insufficient for kernel build deps (~2.5GB) +
+          # kernel-ark clone (~5GB) + rpmbuild (~30GB).
+          sudo systemctl stop docker
+          sudo mv /var/lib/docker /mnt/docker
+          sudo ln -s /mnt/docker /var/lib/docker
+          sudo systemctl start docker
+          echo "=== After cleanup ==="
+          df -h / /mnt
+          docker info 2>/dev/null | grep "Docker Root Dir" || true
 
       - name: Checkout code
         uses: actions/checkout@v6
