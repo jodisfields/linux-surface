@@ -34,14 +34,24 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Maximize disk space
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 10240  # Reserve 10GB for build
-          remove-dotnet: true
-          remove-android: true
-          remove-docker-images: true
-          remove-haskell: true
+      - name: Free up disk space and relocate Docker to /mnt
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /usr/share/swift /opt/hostedtoolcache \
+            /usr/local/graalvm /usr/local/.ghcup /usr/local/share/powershell \
+            /usr/local/share/chromium /usr/local/julia* /opt/pipx \
+            /usr/share/az_* /opt/microsoft /usr/share/miniconda \
+            /usr/local/aws-* /usr/local/share/vcpkg /usr/share/kotlinc \
+            /usr/share/gradle* /usr/share/sbt /usr/lib/google-cloud-sdk \
+            /usr/lib/jvm 2>/dev/null || true
+          sudo docker image prune -af 2>/dev/null || true
+          sudo apt-get autoremove -y 2>/dev/null || true
+          sudo apt-get clean 2>/dev/null || true
+          sudo systemctl stop docker
+          sudo mv /var/lib/docker /mnt/docker
+          sudo ln -s /mnt/docker /var/lib/docker
+          sudo systemctl start docker
+          df -h / /mnt
 
       - name: Checkout linux-surface repo
         uses: actions/checkout@v6
