@@ -2,25 +2,17 @@ name: Build Fedora RPM
 
 # CI pipeline: builds the linux-surface kernel as a Fedora RPM.
 #
-# On every push/PR:  builds RPM and uploads as a downloadable artifact.
-# On tag push:       also publishes the RPM to a GitHub Release.
+# The full kernel build requires ~50GB disk and takes 2+ hours, so it only
+# runs on tag pushes and manual dispatch — not on every PR push.
+#
+# On tag push:       builds RPM and publishes to GitHub Release.
 # Manual dispatch:   build + optional release.
 
 on:
   push:
-    branches:
-      - develop
-      - master
-      - 'claude/**'
-      - 'copilot/**'
     tags:
       - 'fedora-*'
       - 'release-*'
-
-  pull_request:
-    branches:
-      - develop
-      - master
 
   workflow_dispatch:
     inputs:
@@ -32,10 +24,9 @@ on:
       fedora_version:
         description: 'Fedora version to build for'
         required: false
-        default: '41'
+        default: '42'
         type: choice
         options:
-          - '40'
           - '41'
           - '42'
 
@@ -57,51 +48,21 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: Free up disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /usr/local/share/boost /usr/share/swift /opt/hostedtoolcache \
-            /usr/local/graalvm /usr/local/.ghcup /usr/local/share/powershell \
-            /usr/local/share/chromium /usr/local/julia* /opt/pipx \
-            /usr/share/az_* /opt/microsoft /usr/share/miniconda \
-            /usr/local/aws-* /usr/local/share/vcpkg /usr/share/kotlinc \
-            /usr/share/gradle* /usr/share/sbt /usr/lib/google-cloud-sdk \
-            /usr/lib/jvm 2>/dev/null || true
-          sudo apt-get autoremove -y 2>/dev/null || true
-          sudo apt-get clean 2>/dev/null || true
-          sudo docker image prune -af 2>/dev/null || true
-          df -h / /mnt
+      - name: Maximize disk space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 5120
+          remove-dotnet: true
+          remove-android: true
+          remove-docker-images: true
 
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Symlink heavy build dirs to /mnt
-        run: |
-          # kernel-ark clone (~5GB) + rpmbuild (~30GB) need /mnt space.
-          # Create symlinks ONLY — do NOT mkdir the targets. build-ark.py
-          # checks os.path.exists() which follows symlinks; a dangling
-          # symlink returns False, so git clone will create the target dir.
-          # rpmbuild/srpm targets need to exist for rpmbuild to work.
-          sudo mkdir -p /mnt/rpmbuild /mnt/srpm
-          sudo chown "$(id -u):$(id -g)" /mnt/rpmbuild /mnt/srpm
-          ln -sfn /mnt/kernel-ark pkg/fedora/kernel-surface/kernel-ark
-          ln -sfn /mnt/rpmbuild pkg/fedora/kernel-surface/rpmbuild
-          ln -sfn /mnt/srpm pkg/fedora/kernel-surface/srpm
-          # Verify: kernel-ark symlink should be dangling
-          ls -la pkg/fedora/kernel-surface/kernel-ark || true
-          test ! -e pkg/fedora/kernel-surface/kernel-ark && echo "kernel-ark symlink is dangling (good)" || echo "WARNING: kernel-ark target exists"
-          df -h / /mnt
-
       - name: Initialize containers
         run: |
-          # Mount both workspace and /mnt so the container can follow the symlink
-          if command -v docker &> /dev/null; then DOCKER=docker; else DOCKER=podman; fi
-          $DOCKER run -d --name "${GITHUB_REPOSITORY_ID}" \
-            -v "${GITHUB_WORKSPACE}:/working" \
-            -v "/mnt:/mnt" \
-            --workdir "/working" \
-            --entrypoint tail \
-            "registry.fedoraproject.org/fedora:${{ env.FEDORA }}" -f /dev/null
+          bash ./.github/scripts/container/create.sh \
+            registry.fedoraproject.org/fedora:${{ env.FEDORA }}
 
       - name: Install build dependencies
         run: |
@@ -126,7 +87,7 @@ jobs:
 
       - name: Check disk space
         if: always()
-        run: df -h / /mnt
+        run: df -h
 
       - name: Sign packages
         env:
@@ -175,7 +136,6 @@ jobs:
       - name: Determine release tag and kernel version
         id: meta
         run: |
-          # Extract kernel version from the build script
           KERNEL_VER=$(grep 'PACKAGE_TAG' pkg/fedora/kernel-surface/build-linux-surface.py \
             | grep -oP '[0-9]+\.[0-9]+\.[0-9]+-[0-9]+' | head -1)
 
@@ -192,11 +152,6 @@ jobs:
 
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "kernel_version=$KERNEL_VER" >> $GITHUB_OUTPUT
-          echo "Release: $TAG (kernel $KERNEL_VER)"
-
-          # List the RPMs
-          echo "=== Release assets ==="
-          ls -lh release-rpms/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -215,7 +170,6 @@ jobs:
             ### Installation
 
             ```bash
-            # Install the kernel
             sudo dnf install ./kernel-surface-[0-9]*.rpm ./kernel-surface-core-*.rpm ./kernel-surface-modules-*.rpm
 
             # (Optional) Clone the repo for contrib config files
@@ -230,7 +184,6 @@ jobs:
             sudo cp /tmp/linux-surface/contrib/performance-tuning/99-surface-performance.conf /etc/sysctl.d/
             sudo sysctl --system
 
-            # Reboot
             sudo reboot
             ```
 
