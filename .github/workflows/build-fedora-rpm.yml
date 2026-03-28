@@ -57,9 +57,8 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: Free up disk space and move Docker to /mnt
+      - name: Free up disk space
         run: |
-          # Remove large toolchains from root (~30GB freed)
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /usr/local/share/boost /usr/share/swift /opt/hostedtoolcache \
             /usr/local/graalvm /usr/local/.ghcup /usr/local/share/powershell \
@@ -70,23 +69,24 @@ jobs:
             /usr/lib/jvm 2>/dev/null || true
           sudo apt-get autoremove -y 2>/dev/null || true
           sudo apt-get clean 2>/dev/null || true
-          # Move Docker data to /mnt (~60GB available) so containers and
-          # build artifacts don't consume root disk space
-          sudo systemctl stop docker
-          sudo mv /var/lib/docker /mnt/docker
-          sudo ln -s /mnt/docker /var/lib/docker
-          sudo systemctl start docker
-          docker info | grep "Docker Root Dir"
-          echo "=== Disk layout ==="
+          sudo docker image prune -af 2>/dev/null || true
           df -h / /mnt
 
-      - name: Checkout code
+      - name: Checkout code to /mnt
         uses: actions/checkout@v6
+        with:
+          path: /mnt/workspace
 
       - name: Initialize containers
         run: |
-          bash ./.github/scripts/container/create.sh \
-            registry.fedoraproject.org/fedora:${{ env.FEDORA }}
+          # Mount /mnt/workspace as the container working dir so the entire
+          # build (kernel-ark clone, SRPM, rpmbuild) happens on /mnt (~60GB)
+          if command -v docker &> /dev/null; then DOCKER=docker; else DOCKER=podman; fi
+          $DOCKER run -d --name "${GITHUB_REPOSITORY_ID}" \
+            -v "/mnt/workspace:/working" \
+            --workdir "/working" \
+            --entrypoint tail \
+            "registry.fedoraproject.org/fedora:${{ env.FEDORA }}" -f /dev/null
 
       - name: Install build dependencies
         run: |
@@ -127,7 +127,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: kernel-surface-fedora-${{ env.FEDORA }}-rpms
-          path: pkg/fedora/kernel-surface/out/x86_64
+          path: /mnt/workspace/pkg/fedora/kernel-surface/out/x86_64
           retention-days: 30
 
   release:
