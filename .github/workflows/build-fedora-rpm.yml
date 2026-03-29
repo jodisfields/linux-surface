@@ -90,7 +90,15 @@ jobs:
         run: |
           bash ./.github/scripts/container/exec.sh \
             -- \
-            bash ./.github/scripts/package/fedora.sh setup-builddeps
+            bash -c '
+              bash ./.github/scripts/package/fedora.sh setup-builddeps
+              echo "=== Installing extra kernel-ark build deps ==="
+              dnf install -y python3-devel python3-setuptools openssl \
+                perl-generators bpftool dwarves libbpf-devel \
+                perl-English perl-File-Find perl-IPC-Open2 \
+                gettext ncurses-devel 2>/dev/null || true
+              df -h /
+            '
 
       - name: Setup Secure Boot certificate
         env:
