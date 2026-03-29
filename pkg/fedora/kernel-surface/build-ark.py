@@ -175,8 +175,9 @@ if len(buildopts) > 0:
     cmd.append("BUILDOPTS='%s'" % " ".join(buildopts))
 
 # Skip config consistency check — upstream kernel-ark tags sometimes have
-# s390x/RHEL config mismatches that are irrelevant to our x86_64-only build.
-cmd.append("DISTCONFCHECK=")
+# config mismatches across architectures that are irrelevant to our
+# x86_64-only build.
+cmd.append("DISTCONFCHECK=true")
 
 # Build RPMS
 system(" ".join(cmd))
