@@ -40,7 +40,7 @@ on:
 
 jobs:
   build:
-    name: Build Kernel (Fedora ${{ env.FEDORA }})
+    name: Build Kernel (Fedora 42)
     runs-on: ubuntu-latest
 
     steps:
