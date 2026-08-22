@@ -1,6 +1,0 @@
-[Unit]
-Description=linux-surface default kernel watchdog
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/default-kernel
