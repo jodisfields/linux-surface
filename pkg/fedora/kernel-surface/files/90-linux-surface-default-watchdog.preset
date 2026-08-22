@@ -1,5 +1,5 @@
-# Make sure that the old, manually created units get disabled
+# Disable the unit used by older packages.
 disable default-kernel.path
 
-# Enable the new unit provided by the package
+# Keep the newest Surface kernel selected in GRUB.
 enable linux-surface-default-watchdog.path

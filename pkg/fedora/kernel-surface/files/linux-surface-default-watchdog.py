@@ -5,83 +5,65 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
-
-
-def grub2_editenv(*args: Any, **kwargs: Any) -> str:
-	subprocess.run(["grub2-editenv", *args], check=True, **kwargs)
+def grub2_editenv(*args: str, capture_output: bool = False) -> None:
+    subprocess.run(
+        ["grub2-editenv", *args], check=True, capture_output=capture_output
+    )
 
 
 def main() -> int:
-	boot: Path = Path("/boot")
-	mid: Path = Path("/etc/machine-id")
+    boot = Path("/boot")
+    machine_id_file = Path("/etc/machine-id")
 
-	if not boot.exists():
-		print("ERROR: /boot directory does not exist")
-		return 1
+    if not boot.is_dir():
+        print("Error: /boot does not exist", file=sys.stderr)
+        return 1
 
-	if not mid.exists():
-		print("ERROR: /etc/machine-id does not exist")
-		return 1
+    if not machine_id_file.is_file():
+        print("Error: /etc/machine-id does not exist", file=sys.stderr)
+        return 1
 
-	blsdir: Path = boot / "loader" / "entries"
+    bls_dir = boot / "loader" / "entries"
 
-	if not blsdir.exists():
-		print("ERROR: /boot/loader/entries does not exist")
-		return 1
+    if not bls_dir.is_dir():
+        print("Error: /boot/loader/entries does not exist", file=sys.stderr)
+        return 1
 
-	try:
-		grub2_editenv("--help", capture_output=True)
-	except:
-		print("ERROR: grub2-editenv is not working")
-		return 1
+    try:
+        grub2_editenv("--help", capture_output=True)
+    except (OSError, subprocess.CalledProcessError) as error:
+        print(f"Error: grub2-editenv failed: {error}", file=sys.stderr)
+        return 1
 
-	# Get list of surface kernels sorted by timestamp.
-	#
-	# We use creation time here because it represents when the kernel was installed.
-	# Modification time can be a bit wonky and seems to correspond to the build date.
-	kernels: list[Path] = sorted(
-		boot.glob("vmlinuz-*.surface.*"),
-		key=lambda x: x.stat().st_ctime,
-		reverse=True,
-	)
+    # The inode change time reflects package installation more closely than mtime,
+    # which can retain the kernel build timestamp.
+    kernels = sorted(
+        boot.glob("vmlinuz-*.surface.*"),
+        key=lambda kernel: kernel.stat().st_ctime,
+        reverse=True,
+    )
 
-	if len(kernels) == 0:
-		print("ERROR: Failed to find a surface kernel")
-		return 1
+    if not kernels:
+        print("Error: no Surface kernel found in /boot", file=sys.stderr)
+        return 1
 
-	# The saved_entry property from grubenv determines what kernel is booted by default.
-	# Its value is the filename of the BLS entry in /boot/loader/entries minus the file extension.
-	#
-	# The BLS files are named using a combination of the machine ID and the version string
-	# of the kernel that is being booted. Since we have the vmlinux, we can get the version
-	# from its name, and the machine ID from /etc/machine-id.
-	#
-	# This allows setting the default kernel without calling grubby or having to figure out
-	# which path GRUB will use to boot the kernel.
+    kernel = kernels[0]
+    machine_id = machine_id_file.read_text().strip()
+    version = kernel.name.removeprefix("vmlinuz-")
+    bls_config = bls_dir / f"{machine_id}-{version}.conf"
 
-	kernel: Path = kernels[0]
+    if not bls_config.is_file():
+        print(f"Error: {bls_config} does not exist", file=sys.stderr)
+        return 1
 
-	machineid: str = mid.read_text().strip()
-	version: str = kernel.name.lstrip("vmlinuz-")
+    print(f"Kernel: {kernel}")
+    print(f"BLS entry: {bls_config}")
+    grub2_editenv("-", "set", f"saved_entry={bls_config.stem}")
 
-	blscfg: Path = blsdir / "{}-{}.conf".format(machineid, version)
-
-	# Make sure the config really exists
-	if not blscfg.exists():
-		print("ERROR: {} does not exist".format(blscfg))
-		return 1
-
-	print("Kernel: {}".format(kernel))
-	print("BLS entry: {}".format(blscfg))
-
-	grub2_editenv("-", "set", "saved_entry={}".format(blscfg.stem))
-
-	# Update timestamp for rEFInd and ensure it is marked as latest across all kernels
-	kernel.touch(exist_ok=True)
-
-	return 0
+    # rEFInd uses this timestamp to identify the newest kernel.
+    kernel.touch(exist_ok=True)
+    return 0
 
 
 if __name__ == "__main__":
-	sys.exit(main())
+    sys.exit(main())

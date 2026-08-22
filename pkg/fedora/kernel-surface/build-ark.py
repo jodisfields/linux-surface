@@ -1,193 +1,96 @@
 #!/usr/bin/env python3
 
 import argparse
-import functools
-import operator
-import os
 import shutil
 import subprocess
-import time
+from itertools import chain
+from pathlib import Path
 
 
-def system(cmd: str) -> None:
-    subprocess.run(cmd, shell=True, check=True)
+def run(*command: str | Path, cwd: Path | None = None) -> None:
+    subprocess.run([str(part) for part in command], cwd=cwd, check=True)
 
 
-parser = argparse.ArgumentParser(usage="Build a patched Fedora kernel")
-
-parser.add_argument(
-    "--package-name",
-    help="The name of the patched package (e.g. foo -> kernel-foo).",
-    required=True,
-)
-
-parser.add_argument(
-    "--package-tag",
-    help="The upstream tag to build.",
-    required=True,
-)
-
-parser.add_argument(
-    "--package-release",
-    help="The release suffix of the modified package.",
-    required=True,
-)
-
-parser.add_argument(
-    "--ark-dir",
-    help="The local path to the kernel-ark repository.",
-    default="kernel-ark",
-)
-
-parser.add_argument(
-    "--ark-url",
-    help="The remote path to the kernel-ark repository.",
-    default="https://gitlab.com/cki-project/kernel-ark",
-)
-
-parser.add_argument(
-    "--patch",
-    help="Applies a patch to the kernel source.",
-    action="append",
-    nargs="+",
-)
-
-parser.add_argument(
-    "--config",
-    help="Applies a KConfig fragment to the kernel source.",
-    action="append",
-    nargs="+",
-)
-
-parser.add_argument(
-    "--file",
-    help="Copy a file into the RPM buildroot.",
-    action="append",
-    nargs="+",
-)
-
-parser.add_argument(
-    "--buildopts",
-    help="Enable or disable options of the kernel spec file.",
-    action="append",
-    nargs="+",
-)
-
-parser.add_argument(
-    "--mode",
-    help="Whether to build a source RPM or binary RPMs.",
-    choices=["rpms", "srpm"],
-    default="rpms",
-)
-
-parser.add_argument(
-    "--outdir",
-    help="The directory where the built RPM files will be saved.",
-    default="out",
-)
-
+parser = argparse.ArgumentParser(description="Build a patched Fedora kernel RPM.")
+parser.add_argument("--package-name", required=True)
+parser.add_argument("--package-tag", required=True)
+parser.add_argument("--package-release", required=True)
+parser.add_argument("--ark-dir", default="kernel-ark")
+parser.add_argument("--ark-url", default="https://gitlab.com/cki-project/kernel-ark")
+parser.add_argument("--patch", action="append", nargs="+")
+parser.add_argument("--config", action="append", nargs="+")
+parser.add_argument("--file", action="append", nargs="+")
+parser.add_argument("--buildopts", action="append", nargs="+")
+parser.add_argument("--mode", choices=["rpms", "srpm"], default="rpms")
+parser.add_argument("--outdir", default="out")
 args = parser.parse_args()
 
-patches = [] if not args.patch else functools.reduce(operator.add, args.patch)
-configs = [] if not args.config else functools.reduce(operator.add, args.config)
-files = [] if not args.file else functools.reduce(operator.add, args.file)
-buildopts = [] if not args.buildopts else functools.reduce(operator.add, args.buildopts)
+patches = [Path(item).resolve() for item in chain.from_iterable(args.patch or [])]
+configs = [Path(item).resolve() for item in chain.from_iterable(args.config or [])]
+files = [Path(item).resolve() for item in chain.from_iterable(args.file or [])]
+buildopts = list(chain.from_iterable(args.buildopts or []))
+ark_dir = Path(args.ark_dir).resolve()
+out_dir = Path(args.outdir).resolve()
 
-# Make paths absolute.
-patches = [os.path.realpath(x) for x in patches]
-configs = [os.path.realpath(x) for x in configs]
-files = [os.path.realpath(x) for x in files]
-outdir = os.path.realpath(args.outdir)
+for source in [*patches, *configs, *files]:
+    if not source.is_file():
+        parser.error(f"missing input: {source}")
 
-# Clone the kernel-ark repository if it doesn't exist.
-if not os.path.exists(args.ark_dir):
-    system("git clone '%s' '%s'" % (args.ark_url, args.ark_dir))
+if not ark_dir.exists():
+    run("git", "clone", args.ark_url, ark_dir)
 
-os.chdir(args.ark_dir)
+# kernel-ark is a disposable build tree. Each run discards its local changes.
+tag_ref = f"refs/tags/{args.package_tag}"
+tag_exists = subprocess.run(
+    ["git", "rev-parse", "--verify", "--quiet", tag_ref], cwd=ark_dir
+).returncode == 0
+if not tag_exists:
+    run("git", "fetch", "origin", f"{tag_ref}:{tag_ref}", cwd=ark_dir)
+run("git", "clean", "-dfx", cwd=ark_dir)
+run("git", "reset", "--hard", cwd=ark_dir)
+run("git", "checkout", "--detach", args.package_tag, cwd=ark_dir)
 
-# Check out the requested tag.
-system("git fetch --tags")
-system("git clean -dfx")
-system("git checkout -b 'build/%s'" % time.time())
-system("git reset --hard '%s'" % args.package_tag)
-
-# Apply patches
 for patch in patches:
-    system("git am -3 '%s'" % patch)
+    run("git", "am", "-3", patch, cwd=ark_dir)
 
-# Copy files
-for file in files:
-    shutil.copy(file, "redhat/fedora_files/")
+fedora_files = ark_dir / "redhat" / "fedora_files"
+for source in files:
+    shutil.copy2(source, fedora_files)
 
-# Apply config options
-#
-# The format that the kernel-ark tree expects is a bit different from
-# a standard kernel config. Every option is split into a single file
-# named after that config.
-#
-# Example:
-#   $ cat redhat/configs/common/generic/CONFIG_PCI
-#   CONFIG_PCI=y
-#
-# This supposedly makes things easier for Red Hat developers,
-# but it also ends up being really annoying for us.
+# kernel-ark stores each override in a file named after its Kconfig symbol.
+overrides = ark_dir / "redhat" / "configs" / "custom-overrides" / "generic"
+overrides.mkdir(parents=True, exist_ok=True)
 for config in configs:
-    with open(config) as f:
-        lines = f.readlines()
-
-    # Filter out comments, this means only selecting lines that look like:
-    #   - CONFIG_FOO=b
-    #   - # CONFIG_FOO is not set
-    for line in lines:
-        enable = line.startswith("CONFIG_")
-        disable = line.startswith("# CONFIG_")
-
-        if not enable and not disable:
+    for line in config.read_text().splitlines(keepends=True):
+        if line.startswith("CONFIG_"):
+            name = line.partition("=")[0]
+        elif line.startswith("# CONFIG_") and line.rstrip().endswith(" is not set"):
+            name = line.split()[1]
+        else:
             continue
+        print(f"Applying {line.rstrip()}")
+        (overrides / name).write_text(line)
 
-        NAME = ""
+run("git", "add", overrides, cwd=ark_dir)
+run("git", "commit", "--allow-empty", "-m", f"Merge {args.package_name} config", cwd=ark_dir)
 
-        if enable:
-            NAME = line.split("=")[0]
-        elif disable:
-            NAME = line[2:].split(" ")[0]
+target = "dist-rpms" if args.mode == "rpms" else "dist-srpm"
+make_command = [
+    "make", target,
+    f"SPECPACKAGE_NAME=kernel-{args.package_name}",
+    f"DISTLOCALVERSION=.{args.package_name}",
+    f"BUILD={args.package_release}",
+    "NO_CONFIGCHECKS=1",
+    "VERSION_ON_UPSTREAM=0",
+]
+if buildopts:
+    make_command.append(f"BUILDOPTS={' '.join(buildopts)}")
+run(*make_command, cwd=ark_dir)
 
-        print("Applying %s" % line.rstrip("\n"))
-
-        with open("redhat/configs/custom-overrides/generic/%s" % NAME, "w") as f:
-            f.write(line)
-
-system("git add redhat/configs/custom-overrides/generic")
-system("git commit --allow-empty -m 'Merge %s config'" % args.package_name)
-
-cmd = ["make"]
-
-if args.mode == "rpms":
-    cmd.append("dist-rpms")
-else:
-    cmd.append("dist-srpm")
-
-cmd.append("SPECPACKAGE_NAME='kernel-%s'" % args.package_name)
-cmd.append("DISTLOCALVERSION='.%s'" % args.package_name)
-cmd.append("BUILD='%s'" % args.package_release)
-
-if len(buildopts) > 0:
-    cmd.append("BUILDOPTS='%s'" % " ".join(buildopts))
-
-# Skip config consistency check — upstream kernel-ark tags sometimes have
-# config mismatches across architectures that are irrelevant to our
-# x86_64-only build. Create a wrapper that replaces the config check
-# script with a no-op.
-system("find redhat -name '*.sh' -exec grep -l 'Mismatches found' {} \\; -exec sh -c 'echo \"#!/bin/bash\" > \"$1\" && echo \"exit 0\" >> \"$1\"' _ {} \\; 2>/dev/null || true")
-
-# Build RPMS
-system(" ".join(cmd))
-
-if args.mode == "rpms":
-    rpmdir = "RPMS"
-else:
-    rpmdir = "SRPMS"
-
-# Copy built RPMS to output directory
-os.makedirs(outdir, exist_ok=True)
-system("cp -r redhat/rpm/%s/* '%s'" % (rpmdir, outdir))
+rpm_dir = ark_dir / "redhat" / "rpm" / ("RPMS" if args.mode == "rpms" else "SRPMS")
+artifacts = list(rpm_dir.rglob("*.rpm"))
+if not artifacts:
+    parser.error(f"build produced no RPMs in {rpm_dir}")
+out_dir.mkdir(parents=True, exist_ok=True)
+for artifact in artifacts:
+    shutil.copy2(artifact, out_dir)
