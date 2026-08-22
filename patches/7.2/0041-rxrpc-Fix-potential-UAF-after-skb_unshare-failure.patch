@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: David Howells <dhowells@redhat.com>
+Date: Wed, 22 Apr 2026 17:14:32 +0100
+Subject: [PATCH 41/43] rxrpc: Fix potential UAF after skb_unshare() failure
+
+If skb_unshare() fails to unshare a packet due to allocation failure in
+rxrpc_input_packet(), the skb pointer in the parent (rxrpc_io_thread())
+will be NULL'd out.  This will likely cause the call to
+trace_rxrpc_rx_done() to oops.
+
+Fix this by moving the unsharing down to where rxrpc_input_call_event()
+calls rxrpc_input_call_packet().  There are a number of places prior to
+that where we ignore DATA packets for a variety of reasons (such as the
+call already being complete) for which an unshare is then avoided.
+
+And with that, rxrpc_input_packet() doesn't need to take a pointer to the
+pointer to the packet, so change that to just a pointer.
+
+Fixes: 2d1faf7a0ca3 ("rxrpc: Simplify skbuff accounting in receive path")
+Closes: https://sashiko.dev/#/patchset/20260408121252.2249051-1-dhowells%40redhat.com
+Signed-off-by: David Howells <dhowells@redhat.com>
+cc: Marc Dionne <marc.dionne@auristor.com>
+cc: Jeffrey Altman <jaltman@auristor.com>
+cc: Simon Horman <horms@kernel.org>
+cc: linux-afs@lists.infradead.org
+cc: stable@kernel.org
+Link: https://patch.msgid.link/20260422161438.2593376-4-dhowells@redhat.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+(cherry picked from commit 1f2740150f904bfa60e4bad74d65add3ccb5e7f8)
+---
+ net/rxrpc/call_event.c | 19 ++++++++++++++++++-
+ 1 file changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/net/rxrpc/call_event.c b/net/rxrpc/call_event.c
+index 21be9c86d7a7..e99b3e259a0c 100644
+--- a/net/rxrpc/call_event.c
++++ b/net/rxrpc/call_event.c
+@@ -335,7 +335,24 @@ bool rxrpc_input_call_event(struct rxrpc_call *call)
+ 
+ 			saw_ack |= sp->hdr.type == RXRPC_PACKET_TYPE_ACK;
+ 
+-			rxrpc_input_call_packet(call, skb);
++			if (sp->hdr.securityIndex != 0 &&
++			    skb_cloned(skb)) {
++				/* Unshare the packet so that it can be
++				 * modified by in-place decryption.
++				 */
++				struct sk_buff *nskb = skb_copy(skb, GFP_ATOMIC);
++
++				if (nskb) {
++					rxrpc_new_skb(nskb, rxrpc_skb_new_unshared);
++					rxrpc_input_call_packet(call, nskb);
++					rxrpc_free_skb(nskb, rxrpc_skb_put_call_rx);
++				} else {
++					/* OOM - Drop the packet. */
++					rxrpc_see_skb(skb, rxrpc_skb_see_unshare_nomem);
++				}
++			} else {
++				rxrpc_input_call_packet(call, skb);
++			}
+ 			rxrpc_free_skb(skb, rxrpc_skb_put_call_rx);
+ 			did_receive = true;
+ 		}
