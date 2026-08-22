@@ -1,0 +1,69 @@
+name: Build develop kernel
+
+on:
+  push:
+    branches:
+      - develop
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    container:
+      image: fedora:42
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          dnf -y install @rpm-development-tools dnf5-plugins gh git python3
+          dnf -y builddep kernel
+
+      - name: Build kernel RPMs
+        run: |
+          set -euo pipefail
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python3 pkg/fedora/kernel-surface/build-linux-surface.py
+
+      - name: Verify kernel RPMs
+        run: |
+          set -euo pipefail
+          rpm -K out/*.rpm
+          rpm -qp --queryformat '%{NAME} %{VERSION}-%{RELEASE}.%{ARCH}\n' out/*.rpm
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kernel-surface-${{ github.sha }}
+          path: out/*.rpm
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: develop-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" out/*.rpm --clobber
+          else
+            gh release create "$RELEASE_TAG" out/*.rpm \
+              --prerelease \
+              --target "$GITHUB_SHA" \
+              --title "Surface kernel ${GITHUB_SHA::12}" \
+              --notes "Automated Fedora 42 build from develop at ${GITHUB_SHA}."
+          fi
