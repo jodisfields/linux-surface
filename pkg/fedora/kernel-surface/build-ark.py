@@ -29,6 +29,8 @@ patches = [Path(item).resolve() for item in chain.from_iterable(args.patch or []
 configs = [Path(item).resolve() for item in chain.from_iterable(args.config or [])]
 files = [Path(item).resolve() for item in chain.from_iterable(args.file or [])]
 buildopts = list(chain.from_iterable(args.buildopts or []))
+if "-configchecks" not in buildopts:
+    buildopts.append("-configchecks")
 ark_dir = Path(args.ark_dir).resolve()
 out_dir = Path(args.outdir).resolve()
 
